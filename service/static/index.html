@@ -1,0 +1,2732 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MTR/ICMP 运维 OP</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1220;
+        --panel: rgba(255, 255, 255, 0.06);
+        --border: rgba(255, 255, 255, 0.12);
+        --text: rgba(255, 255, 255, 0.92);
+        --muted: rgba(255, 255, 255, 0.64);
+        --muted2: rgba(255, 255, 255, 0.48);
+        --primary: #7c5cff;
+        --good: #29d17d;
+        --warn: #ffb020;
+        --bad: #ff4d4f;
+        --shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+        --r: 14px;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC",
+          "PingFang SC", "Microsoft YaHei", Arial;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        font-family: var(--sans);
+        color: var(--text);
+        background: radial-gradient(1200px 600px at 15% -10%, rgba(124, 92, 255, 0.45), transparent 55%),
+          radial-gradient(900px 500px at 90% 0%, rgba(41, 209, 125, 0.18), transparent 60%), var(--bg);
+        overflow: hidden;
+      }
+      a {
+        color: inherit;
+      }
+      .app {
+        height: 100%;
+        display: grid;
+        grid-template-columns: 260px 1fr;
+      }
+      .sidebar {
+        padding: 16px;
+        border-right: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+      }
+      .logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        background: conic-gradient(from 180deg, var(--primary), rgba(41, 209, 125, 0.9), rgba(255, 176, 32, 0.9));
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 15px;
+      }
+      .brand .sub {
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .nav {
+        margin-top: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .nav a {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        user-select: none;
+      }
+      .nav a:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .nav a.active {
+        background: rgba(124, 92, 255, 0.18);
+        border-color: rgba(124, 92, 255, 0.32);
+      }
+      .main {
+        height: 100%;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: 56px 1fr;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.12);
+      }
+      .crumb .title {
+        font-weight: 720;
+        font-size: 15px;
+      }
+      .crumb .desc {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .pill {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .btn {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.9);
+        padding: 8px 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .btn.primary {
+        border-color: rgba(124, 92, 255, 0.55);
+        background: rgba(124, 92, 255, 0.2);
+      }
+      .btn.danger {
+        border-color: rgba(255, 77, 79, 0.55);
+        background: rgba(255, 77, 79, 0.14);
+      }
+      .btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .content {
+        padding: 18px;
+        overflow: auto;
+        min-height: 0;
+      }
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+      .grid.cols-2 {
+        grid-template-columns: 1fr 1fr;
+      }
+      @media (max-width: 960px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          display: none;
+        }
+      }
+      .card {
+        border-radius: var(--r);
+        border: 1px solid var(--border);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .card .hd {
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .card .hd .h {
+        font-size: 13px;
+        font-weight: 720;
+      }
+      .card .bd {
+        padding: 14px;
+      }
+      /* BGP 学习路由：大表独立纵向滚动，表头吸附 */
+      .br-table-scroll {
+        margin-top: 8px;
+        max-height: min(68vh, calc(100vh - 280px));
+        overflow: auto;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.12);
+      }
+      .br-table-scroll table {
+        margin-top: 0;
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .br-table-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: rgba(18, 22, 36, 0.98);
+        box-shadow: 0 1px 0 var(--border);
+        font-size: 11px;
+        text-align: left;
+        padding: 8px 10px;
+        white-space: nowrap;
+      }
+      .br-table-scroll tbody td {
+        padding: 7px 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 12px;
+        vertical-align: top;
+      }
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+      }
+      .kpi {
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        padding: 12px;
+      }
+      .kpi .k {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .kpi .v {
+        margin-top: 8px;
+        font-size: 18px;
+        font-weight: 800;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .field {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .field label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      input {
+        background: transparent;
+        border: none;
+        outline: none;
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 12px;
+        min-width: 160px;
+      }
+      /* 避免系统浅色底 + 浅色字导致「未选中」时白底白字看不见 */
+      select {
+        appearance: auto;
+        background-color: rgba(18, 26, 44, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        outline: none;
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 12px;
+        min-width: 160px;
+        padding: 5px 8px;
+      }
+      select option {
+        background-color: #141c2e;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 12px;
+      }
+      th {
+        font-size: 11px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .mono {
+        font-family: var(--mono);
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        border-radius: 999px;
+        padding: 2px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+      }
+      .tag.good .dot {
+        background: var(--good);
+      }
+      .tag.warn .dot {
+        background: var(--warn);
+      }
+      .tag.bad .dot {
+        background: var(--bad);
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.4);
+      }
+      .small {
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      .page {
+        display: none;
+      }
+      .page.show {
+        display: block;
+      }
+      .toast {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(16, 20, 34, 0.95);
+        box-shadow: var(--shadow);
+        font-size: 12px;
+        max-width: 360px;
+        display: none;
+      }
+      .toast.show {
+        display: block;
+      }
+      .footer-tip {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px dashed rgba(255, 255, 255, 0.18);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .json-out {
+        margin: 0;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.25);
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 320px;
+        overflow: auto;
+      }
+      .switch-list {
+        display: grid;
+        gap: 12px;
+      }
+      .switch-row {
+        display: grid;
+        grid-template-columns: minmax(190px, 1fr) auto auto;
+        gap: 10px;
+        align-items: center;
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .switch-row .name {
+        font-weight: 720;
+        font-size: 13px;
+      }
+      .switch-row .desc {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .bgp-sw {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .bgp-sw input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+      }
+      .bgp-sw .track {
+        width: 38px;
+        height: 20px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        position: relative;
+        flex: none;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .bgp-sw .knob {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.82);
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .bgp-sw input:focus-visible + .track {
+        outline: 2px solid rgba(124, 92, 255, 0.55);
+        outline-offset: 2px;
+      }
+      .bgp-sw input:checked + .track {
+        background: rgba(41, 209, 125, 0.22);
+        border-color: rgba(41, 209, 125, 0.42);
+      }
+      .bgp-sw input:checked + .track .knob {
+        transform: translateX(18px);
+        background: var(--good);
+      }
+      .bgp-sw .cap {
+        font-size: 11px;
+        color: var(--muted);
+        min-width: 2em;
+      }
+      input[type="file"] {
+        font-size: 11px;
+        color: var(--muted);
+        max-width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo" aria-hidden="true"></div>
+          <div class="t">
+            <h1>MTR/ICMP OP</h1>
+            <div class="sub">参考 docs/admin-prototype.html 风格</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <a class="active" data-page="dash" href="#dash">
+            <span class="mono" style="font-size: 11px">01</span>
+            <span>总览</span>
+          </a>
+          <a data-page="bgp" href="#bgp">
+            <span class="mono" style="font-size: 11px">02</span>
+            <span>BGP 管理</span>
+          </a>
+          <a data-page="bgp-routes" href="#bgp-routes">
+            <span class="mono" style="font-size: 11px">03</span>
+            <span>BGP 学习路由</span>
+          </a>
+          <a data-page="rules" href="#rules">
+            <span class="mono" style="font-size: 11px">04</span>
+            <span>逐跳替换规则</span>
+          </a>
+          <a data-page="gateway" href="#gateway">
+            <span class="mono" style="font-size: 11px">05</span>
+            <span>ARP 引流</span>
+          </a>
+          <a data-page="vpn" href="#vpn">
+            <span class="mono" style="font-size: 11px">06</span>
+            <span>VPN 出口</span>
+          </a>
+        </nav>
+        <div class="footer-tip">
+          静态页可直接打开；联调时请由 FastAPI 挂载本目录并与 <span class="mono">/api/*</span> 同源。
+          <div style="margin-top: 8px"><a href="/docs" target="_blank" rel="noreferrer">OpenAPI /docs</a></div>
+        </div>
+      </aside>
+      <section class="main">
+        <header class="topbar">
+          <div class="crumb">
+            <div>
+              <div class="title" id="pageTitle">总览</div>
+              <div class="desc" id="pageDesc">功能开关、服务状态与规则统计</div>
+            </div>
+          </div>
+          <div class="actions">
+            <span class="pill" id="apiBasePill">API: 同源</span>
+            <button type="button" class="btn" id="btnRefresh">刷新</button>
+            <a class="btn primary" href="/docs" target="_blank" rel="noreferrer">接口文档</a>
+          </div>
+        </header>
+        <div class="content">
+          <div class="page show" data-page="dash">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">功能开关</div>
+                </div>
+                <div class="bd">
+                  <div class="switch-list">
+                    <div class="switch-row">
+                      <div>
+                        <div class="name">MTR/ICMP 逐跳替换</div>
+                        <div class="desc">控制 ICMP Echo 是否进 NFQUEUE 并按 hop 规则改写 TE；与 ARP 引流独立。</div>
+                      </div>
+                      <span class="tag" id="tagHijack"><span class="dot"></span>—</span>
+                      <button type="button" class="btn primary" id="btnToggleHijack">—</button>
+                    </div>
+                    <div class="switch-row">
+                      <div>
+                        <div class="name">ARP 引流</div>
+                        <div class="desc">二层宣告「网关 IP → 本机 MAC」；条目在侧栏「ARP 引流」配置。</div>
+                      </div>
+                      <span class="tag" id="tagArpSpoof"><span class="dot"></span>—</span>
+                      <button type="button" class="btn primary" id="btnToggleArpSpoof">—</button>
+                    </div>
+                  </div>
+                  <div class="small" style="margin-top: 10px">NFQUEUE 仅服务逐跳替换；ARP 由独立守护进程处理，两者互不影响。</div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="hd">
+                  <div class="h">服务状态</div>
+                  <span class="tag" id="tagHealth"><span class="dot"></span>探测中</span>
+                </div>
+                <div class="bd">
+                  <div class="kpis">
+                    <div class="kpi">
+                      <div class="k">逐跳规则数</div>
+                      <div class="v mono" id="kpiHopRules">—</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">ARP 引流条目数</div>
+                      <div class="v mono" id="kpiArpTargets">—</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">API</div>
+                      <div class="v" id="kpiApi" style="font-size: 14px">—</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">VPN 在线</div>
+                      <div class="v mono" id="kpiVpnUp">—</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">VPN 未就绪</div>
+                      <div class="v mono" id="kpiVpnDown">—</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="small" style="margin-top: 14px">
+              完整后台原型见 <span class="mono">docs/admin-prototype.html</span>；本页仅保留 MTR/ICMP 运维所需最小界面。VPN 出口已接 <span class="mono">/api/vpn/*</span>。
+            </p>
+          </div>
+
+          <div class="page" data-page="bgp">
+            <div class="card">
+              <div class="hd">
+                <div class="h">BGP 邻居（Linux 200 / FRR）</div>
+                <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
+                  <button type="button" class="btn" id="btnBgpRefresh">刷新</button>
+                  <button type="button" class="btn" id="btnBgpSyncMeta" title="把 FRR 中已有邻居写入本地库（仅缺行）">同步元数据</button>
+                  <label class="small" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none">
+                    <input type="checkbox" id="bgpAutoRefresh" checked />
+                    自动刷新列表（每 15 秒，会多次调用 vtysh）
+                  </label>
+                </div>
+              </div>
+              <div class="bd">
+                <p class="small" style="margin-top: 0; margin-bottom: 12px">
+                  下列表为<strong>本机全部 VRF</strong> 的邻居合并展示（无需选 VRF 刷新）。列与 FRR <span class="mono">show bgp vrf … summary</span> 一致：<span class="mono">Neighbor / V / AS / MsgRcvd / MsgSent / TblVer / InQ / OutQ / Up/Down / State(PfxRcd)</span>；另附 VRF、本端 AS、<strong>TCP 源</strong>（<span class="mono">update-source</span>，常与 ARP 引流「冒充网关 IPv4」一致）、角色、OP 开关。
+                  <strong>新增邻居</strong>：在下方 <strong>VRF</strong> 可从列表选或<strong>手输新名称</strong>（合法 Linux 接口名、≤15 字符）；若内核尚无该 VRF，保存时会自动 <span class="mono">ip link add … type vrf</span> 再建 <span class="mono">router bgp</span>。填 <strong>TCP 源</strong> 即对 Linux 201 的 <span class="mono">update-source</span>。改 AS 会删后重建；删除会从 FRR 移除邻居。
+                  <strong>FRR 约束</strong>：同一 VRF、同一 BGP 实例内，<strong>「邻居 IP」= 对端用于建 BGP 的 IPv4</strong>，每个地址<strong>只能一条</strong>会话；不能对<strong>同一邻居 IP</strong>仅靠改 TCP 源（update-source）拆成两条「新增」。<strong>多本机身份连同一对端 IP（如 201 仅 <span class="mono">10.133.152.204</span>）</strong>时：在 Linux 200 上为每条会话使用<strong>不同卫星 VRF</strong>（如 <span class="mono">vbgp250</span>），各 VRF 内各一条 <span class="mono">neighbor 10.133.152.204</span> + 各自 TCP 源；脚本见 <span class="mono">scripts/linux200_multi_vrf_bgp_one_peer.sh</span>。若对端有多个 BGP 地址，也可仍在<strong>同一 VRF</strong>内用不同「邻居 IP」区分。仅改本机源时用「编辑」改 TCP 源。说明：<span class="mono">docs/BGP_ARP_SPOOF_MULTI_SESSION.md</span>。
+                </p>
+                <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end">
+                  <div class="field" style="min-width: 280px">
+                    <label>新增所在 VRF</label>
+                    <select id="bgpVrf" class="mono" style="min-width: 280px">
+                      <option value="" disabled>请选择 VRF</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>邻居IP</label>
+                    <input id="bgpPeerIp" class="mono" placeholder="10.133.152.204" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>Remote AS</label>
+                    <input id="bgpPeerAs" type="number" placeholder="65201" style="width: 96px" />
+                  </div>
+                  <div class="field">
+                    <label>角色</label>
+                    <select id="bgpPeerRole" style="min-width: 140px">
+                      <option value="auto">自动（默认映射）</option>
+                      <option value="downstream">下游运营商</option>
+                      <option value="upstream">上游运营商</option>
+                      <option value="rr">RR（路由反射客户端）</option>
+                      <option value="unknown">未知</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>TCP 源（BGP update-source）</label>
+                    <input id="bgpPeerSource" class="mono" list="bgpSourceIpList" placeholder="与 ARP 冒充网关一致，可空" autocomplete="off" style="min-width: 200px" />
+                    <datalist id="bgpSourceIpList"></datalist>
+                  </div>
+                  <div class="field">
+                    <label title="仅当所选 VRF 尚无 router bgp 时使用；省略则使用后端默认 AS 或 MTR_BGP_ENSURE_LOCAL_AS">建仓本端 AS（可选）</label>
+                    <input id="bgpEnsureAs" type="number" placeholder="65200" style="width: 96px" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label title="自动创建 router bgp 时写入">router-id（可选）</label>
+                    <input id="bgpEnsureRid" class="mono" placeholder="如 10.133.152.200" autocomplete="off" style="min-width: 140px" />
+                  </div>
+                  <button type="button" class="btn primary" id="btnBgpAdd">新增邻居</button>
+                </div>
+
+                <table style="margin-top: 16px">
+                  <thead>
+                    <tr>
+                      <th>VRF</th>
+                      <th>本端AS</th>
+                      <th>Neighbor</th>
+                      <th>V</th>
+                      <th>AS</th>
+                      <th>MsgRcvd</th>
+                      <th>MsgSent</th>
+                      <th>TblVer</th>
+                      <th>InQ</th>
+                      <th>OutQ</th>
+                      <th>TCP源</th>
+                      <th>角色</th>
+                      <th>来源</th>
+                      <th>状态</th>
+                      <th>PfxRcd</th>
+                      <th>Up/Down</th>
+                      <th>开关</th>
+                      <th>路由通告</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="bgpBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="page" data-page="bgp-routes">
+            <div class="card">
+              <div class="hd">
+                <div class="h">BGP 学习路由（SQLite 快照；后台按 FRR RIB 刷新）</div>
+                <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
+                  <button type="button" class="btn" id="btnBrRefresh">刷新表格</button>
+                  <button type="button" class="btn primary" id="btnBrSync">从 FRR 同步入库</button>
+                  <label class="small" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none">
+                    <input type="checkbox" id="brAutoRefresh" checked />
+                    本页自动刷新（20 秒，仅请求 OP 读 SQLite，不经 vtysh）
+                  </label>
+                </div>
+              </div>
+              <div class="bd">
+                <p class="small" style="margin-top: 0; margin-bottom: 10px">
+                  <strong>本页列表不是「直连 FRR 实时」</strong>：浏览器只调 OP 的 <span class="mono">GET /api/bgp/learned-routes</span>，读的是 Linux 200 上 SQLite 里<strong>最近一次成功写入</strong>的快照；本页勾选自动刷新时，也是每隔约 20 秒重新读库，与 FRR 是否变化无关，直至后台再次同步入库。末列<strong>数据来源</strong>标明该行来自哪张库表、与最近一次 RIB 后台同步是否成功（悬停可看说明）。
+                  后台在 OP 进程内<strong>定时</strong>（默认间隔由环境变量 <span class="mono">MTR_BGP_RIB_SYNC_SEC</span> 控制，未设置时约 60 秒）执行 <span class="mono">vtysh</span> 拉 IPv4 单播 RIB 并写库；BGP 恢复后会按该周期把新 RIB 刷进缓存表。若 <span class="mono">vtysh</span> 失败或（在「上游学习 VRF」上）<strong>由「BGP 管理」标注为上游的邻居</strong>未 Established 且 RIB 已空，则<strong>保留库内旧快照</strong>，避免断 BGP 后 OP 上被清空。上游身份以 SQLite 中该邻居角色为「上游运营商」为准（无录入时才看环境变量 <span class="mono">MTR_BGP_STICKY_UPSTREAM_NEIGHBOR</span>）。其它 VRF 在能读到 RIB 时仍按快照整表替换；角色 / 邻居与「BGP 管理」元数据对齐。学习 VRF 名默认 <span class="mono">vrf2103</span>，可用 <span class="mono">MTR_BGP_UPSTREAM_CACHE_VRF</span> 覆盖。
+                </p>
+                <div class="row" style="flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 10px">
+                  <div class="field" style="min-width: 140px">
+                    <label class="small">VRF</label>
+                    <select id="brFilterVrf" class="mono">
+                      <option value="">全部</option>
+                    </select>
+                  </div>
+                  <div class="field" style="min-width: 220px">
+                    <label class="small">来源邻居 IP</label>
+                    <select id="brFilterNeighbor" class="mono">
+                      <option value="">全部</option>
+                    </select>
+                  </div>
+                  <div class="field" style="min-width: 160px">
+                    <label class="small">每页条数</label>
+                    <select id="brPageSize" class="mono" style="min-width: 100px">
+                      <option value="20">20</option>
+                      <option value="50">50</option>
+                      <option value="100" selected>100</option>
+                      <option value="200">200</option>
+                      <option value="500">500</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="small mono" id="brSyncMeta" style="margin-bottom: 10px; color: var(--muted)">—</div>
+                <div class="br-table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>VRF</th>
+                        <th>前缀</th>
+                        <th>下一跳</th>
+                        <th>来源角色</th>
+                        <th>来源邻居 IP</th>
+                        <th>远端 AS</th>
+                        <th>AS_PATH</th>
+                        <th>数据更新时间</th>
+                        <th>已持久化</th>
+                        <th>数据来源</th>
+                      </tr>
+                    </thead>
+                    <tbody id="brRoutesBody"></tbody>
+                  </table>
+                </div>
+                <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; justify-content: center;">
+                  <button type="button" class="btn" id="brPageFirst" disabled>首页</button>
+                  <button type="button" class="btn" id="brPagePrev" disabled>上一页</button>
+                  <span class="small mono" id="brPageInfo">—</span>
+                  <button type="button" class="btn" id="brPageNext" disabled>下一页</button>
+                  <button type="button" class="btn" id="brPageLast" disabled>末页</button>
+                  <div class="field" style="margin-left: 10px; min-width: 120px">
+                    <label class="small">跳转到</label>
+                    <input type="number" id="brPageJump" min="1" placeholder="页码" style="min-width: 60px" />
+                    <button type="button" class="btn" id="brPageGo">跳转</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="page" data-page="rules">
+            <div class="card">
+              <div class="hd">
+                <div class="h">200→目的 逐跳替换（探测 hop 命中 CIDR 则伪造 ICMP TE 源）</div>
+              </div>
+              <div class="bd">
+                <p class="small" style="margin-bottom: 12px">
+                  探测路径上每一跳与 <span class="mono">match_cidr</span> 匹配：<span class="mono">priority</span> 高者优先，相同 priority 再选更小范围；命中则 ICMP TE 源显示为
+                  <span class="mono">forged_src</span>（真实 TE 经 Linux 200 改写；本页不配置延时/TTL）。
+                </p>
+                <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end">
+                  <div class="field">
+                    <label>match_cidr</label>
+                    <input id="hrCidr" class="mono" placeholder="203.0.113.0/24" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>forged_src</label>
+                    <input id="hrForge" class="mono" placeholder="203.0.113.1" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>priority</label>
+                    <input id="hrPri" type="number" value="10" style="width: 72px" />
+                  </div>
+                  <div class="field" style="min-width: 140px">
+                    <label>备注</label>
+                    <input id="hrNote" placeholder="可选" autocomplete="off" />
+                  </div>
+                  <button type="button" class="btn primary" id="btnAddHopRule">添加</button>
+                </div>
+                <table style="margin-top: 16px">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>CIDR</th>
+                      <th>伪造源</th>
+                      <th>pri</th>
+                      <th>启用</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="hopRulesBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="page" data-page="gateway">
+            <div class="card">
+              <div class="hd">
+                <div class="h">ARP 引流条目（逐条配置）</div>
+                <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
+                  <button type="button" class="btn" id="btnArpReconcileSatellite" title="按当前配置创建/删除卫星VRF">
+                    同步卫星VRF
+                  </button>
+                  <button type="button" class="btn primary" id="btnArpAddQuick" title="快速添加新的冒充IP">
+                    + 快速添加
+                  </button>
+                  <button type="button" class="btn" id="btnArpRefresh" title="刷新ARP引流列表">
+                    刷新列表
+                  </button>
+                </div>
+              </div>
+              <div class="bd">
+                <p class="small" style="margin-top: 0">
+                  每条记录：<strong>冒充哪个网关 IPv4</strong>、经 Linux 200 的<strong>哪个接口</strong>发二层帧（真实 MAC 取自该口）；守护进程对该条做<strong>周期性 GARP</strong>并在收到 ARP 询问时按策略回复。保存后 OP 会<strong>立即</strong>尝试在该接口上添加该 IPv4 的 <span class="mono">/32</span>（与守护进程逻辑一致，便于 BGP <span class="mono">update-source</span>）；总开关关闭或删除条目时会撤掉不再需要的 <span class="mono">/32</span>。需本机具备 <span class="mono">CAP_NET_ADMIN</span>（通常 root 跑 OP）。可用环境变量 <span class="mono">MTR_OP_ARP_ASSIGN_HOST_IP=0</span> 关闭 OP 侧下发。总览可一键开关 ARP 引流总控；单条仍以「启用」为准。<strong>卫星 VRF 自动建</strong>：在 200 上设 <span class="mono">MTR_AUTO_SATELLITE_VRF=cidr</span>（或 <span class="mono">all</span> / <span class="mono">note</span>）后，保存匹配条目的 ARP 即会尝试创建 <span class="mono">vbgp*</span>（见 <span class="mono">service/README.md</span>）；亦可点击上方「同步卫星VRF」按钮。
+                </p>
+                <div class="row" style="gap: 10px; flex-wrap: wrap; margin-bottom: 14px">
+                  <button type="button" class="btn primary" id="btnAddArpTarget">添加条目</button>
+                </div>
+                <table style="margin-top: 8px">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>冒充网关 IP</th>
+                      <th>VRF名称</th>
+                      <th>接口</th>
+                      <th>策略</th>
+                      <th>策略网段</th>
+                      <th>启用</th>
+                      <th>VRF状态</th>
+                      <th>备注</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="arpTargetsBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card" style="margin-top: 14px">
+              <div class="hd">
+                <div class="h">验收说明</div>
+              </div>
+              <div class="bd small">
+                客户端 <span class="mono">ip neigh show</span> / <span class="mono">arp -n</span>：对应网关 IP 的 MAC 应为 Linux 200 上所选<strong>接口</strong>的 MAC。200 上需运行 <span class="mono">arp_spoof_daemon.py</span>；冒充 IP 的接口 <span class="mono">/32</span> 由 OP 保存配置与守护进程共同维护。
+                <br><br>
+                <strong>联动说明</strong>：添加 ARP 引流条目后，OP 会自动创建卫星 VRF（如 <span class="mono">vbgp250</span>），并可自动为该 VRF 创建 BGP 邻居与 Linux 201 建立会话。删除 ARP 条目时，对应的卫星 VRF 和 BGP 邻居也会被自动删除。
+              </div>
+            </div>
+          </div>
+
+          <div class="page" data-page="vpn">
+            <div class="card">
+              <div class="hd">
+                <div class="h">VPN 出口（OpenVPN / GRE / L2TP → vrf2103）</div>
+                <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
+                  <button type="button" class="btn primary" id="btnVpnApply">下发全部（幂等）</button>
+                  <button type="button" class="btn" id="btnVpnPing">连通性测试</button>
+                  <button type="button" class="btn" id="btnVpnRefresh">刷新</button>
+                </div>
+              </div>
+              <div class="bd">
+                <p class="small" style="margin-top: 0; margin-bottom: 12px">
+                  数据存 SQLite；<strong>下发</strong>调用 <span class="mono">POST /api/vpn/apply</span>（Linux 上执行 <span class="mono">ip</span> / OpenVPN）。非 Linux 或设置
+                  <span class="mono">MTR_OP_VPN_APPLY=0</span> 时仅更新库状态。说明：本功能为<strong>本机连外部 VPN 作出口</strong>，非用户拨入。
+                  <br />
+                  <strong>config 示例</strong> — GRE：<span class="mono">{"gre":{"remote":"1.2.3.4","local":"0.0.0.0","mtu":1476}}</span>；
+                  OpenVPN：<span class="mono">{"remote":"vpn.example.com:1194","proto":"udp","ca":"/path/ca.crt",...}</span>；
+                  L2TP：<span class="mono">{"l2tp":{"server":"1.2.3.4","username":"u","password":"***","ipsec_psk":"***"}}</span>（密码建议用 <span class="mono">password_file</span> 绝对路径；下发后在 <span class="mono">$MTR_OP_DATA/vpn/l2tp-&lt;id&gt;/</span> 取合并片段）。
+                </p>
+                <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 14px">
+                  <div class="field">
+                    <label>名称</label>
+                    <input id="vpnNewName" class="mono" placeholder="gre-hk-01" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>类型</label>
+                    <select id="vpnNewType" style="min-width: 120px">
+                      <option value="gre">gre</option>
+                      <option value="openvpn">openvpn</option>
+                      <option value="l2tp">l2tp</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>endpoint</label>
+                    <input id="vpnNewEp" class="mono" placeholder="103.9.8.1 或 host:1194" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>priority</label>
+                    <input id="vpnNewPri" type="number" value="100" style="width: 80px" />
+                  </div>
+                  <div class="field">
+                    <label>VRF</label>
+                    <input id="vpnNewVrf" class="mono" value="vrf2103" style="width: 100px" />
+                  </div>
+                  <div class="field" style="min-width: 220px">
+                    <label>config JSON（可选）</label>
+                    <input id="vpnNewCfg" class="mono" placeholder='GRE / OpenVPN / L2TP 示例见下方说明' autocomplete="off" />
+                  </div>
+                  <button type="button" class="btn primary" id="btnVpnAddLink">新增隧道</button>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>名称</th>
+                      <th>类型</th>
+                      <th>endpoint</th>
+                      <th>iface</th>
+                      <th>状态</th>
+                      <th>pri</th>
+                      <th>启用</th>
+                      <th>期望 up</th>
+                      <th>rx / tx</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vpnLinksBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card" style="margin-top: 14px">
+              <div class="hd">
+                <div class="h">VPN 路由策略（ip rule + table）</div>
+              </div>
+              <div class="bd">
+                <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 14px">
+                  <div class="field">
+                    <label>目的 CIDR</label>
+                    <input id="polNewDst" class="mono" placeholder="8.8.8.0/24" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>源 CIDR（可空）</label>
+                    <input id="polNewSrc" class="mono" placeholder="10.12.0.0/24" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>标签</label>
+                    <input id="polNewLbl" placeholder="C3" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label>出口隧道 ID</label>
+                    <input id="polNewLid" type="number" placeholder="1" style="width: 72px" />
+                  </div>
+                  <div class="field">
+                    <label>备用隧道 ID</label>
+                    <input id="polNewBid" type="number" placeholder="可选" style="width: 88px" />
+                  </div>
+                  <div class="field">
+                    <label>失败策略</label>
+                    <select id="polNewFail" style="min-width: 140px">
+                      <option value="fallback">回退普通出口</option>
+                      <option value="switch_backup">切换备用 VPN</option>
+                      <option value="deny">拒绝转发</option>
+                    </select>
+                  </div>
+                  <button type="button" class="btn primary" id="btnVpnAddPol">新增策略</button>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>目的</th>
+                      <th>源</th>
+                      <th>标签</th>
+                      <th>出口 ID</th>
+                      <th>备用</th>
+                      <th>失败策略</th>
+                      <th>启用</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vpnPolBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </div>
+    <div class="toast" id="toast" role="status"></div>
+
+    <dialog id="dlgHopEdit" style="border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 0; background: #131c2e; color: rgba(255,255,255,0.92); max-width: 440px; box-shadow: var(--shadow)">
+      <div style="padding: 16px 18px">
+        <div style="font-weight: 720; margin-bottom: 12px">编辑逐跳规则 <span class="mono" id="edIdLbl"></span></div>
+        <input type="hidden" id="edId" />
+        <div class="field" style="margin-bottom: 10px">
+          <label>match_cidr</label>
+          <input id="edCidr" class="mono" style="width: 100%" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>forged_src</label>
+          <input id="edForge" class="mono" style="width: 100%" autocomplete="off" />
+        </div>
+        <div class="row" style="gap: 10px; flex-wrap: wrap; margin-bottom: 10px">
+          <div class="field">
+            <label>priority</label>
+            <input id="edPri" type="number" style="width: 72px" />
+          </div>
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>备注</label>
+          <input id="edNote" style="width: 100%" autocomplete="off" />
+        </div>
+        <label class="small" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
+          <input type="checkbox" id="edEn" /> 启用
+        </label>
+        <div class="row" style="justify-content: flex-end; gap: 10px">
+          <button type="button" class="btn" id="edCancel">取消</button>
+          <button type="button" class="btn primary" id="edSave">保存</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="dlgArpEdit" style="border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 0; background: #131c2e; color: rgba(255,255,255,0.92); max-width: 480px; box-shadow: var(--shadow)">
+      <div style="padding: 16px 18px">
+        <div style="font-weight: 720; margin-bottom: 12px">ARP 引流条目 <span class="mono" id="arpDlgTitle">新建</span></div>
+        <input type="hidden" id="arpDlgId" value="" />
+        <div class="field" style="margin-bottom: 10px">
+          <label>冒充网关 IPv4</label>
+          <input id="arpDlgIp" class="mono" style="width: 100%" placeholder="10.133.152.200" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>VRF名称（如 vbgp10133152242）</label>
+          <input id="arpDlgVrf" class="mono" style="width: 100%" placeholder="vbgp10133152242" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>接口</label>
+          <select id="arpDlgIface" class="mono" style="width: 100%"></select>
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>被动应答策略</label>
+          <select id="arpDlgMode" class="mono" style="width: 100%">
+            <option value="gateway_only">gateway_only — 不按网段过滤询问源</option>
+            <option value="victim_cidr">victim_cidr — 仅询问源落在下列网段（留空=不限）</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>策略网段（逗号分隔 CIDR）</label>
+          <input id="arpDlgCidrs" class="mono" style="width: 100%" placeholder="10.133.152.0/24" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>备注</label>
+          <input id="arpDlgNote" style="width: 100%" autocomplete="off" />
+        </div>
+        <label class="small" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
+          <input type="checkbox" id="arpDlgEn" checked /> 启用（周期 GARP + 被动应答）
+        </label>
+        <div class="row" style="justify-content: flex-end; gap: 10px">
+          <button type="button" class="btn" id="arpDlgCancel">取消</button>
+          <button type="button" class="btn primary" id="arpDlgSave">保存</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="dlgArpQuickAdd" style="border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 0; background: #131c2e; color: rgba(255,255,255,0.92); max-width: 400px; box-shadow: var(--shadow)">
+      <div style="padding: 16px 18px">
+        <div style="font-weight: 720; margin-bottom: 12px">快速添加冒充IP</div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>冒充网关 IPv4</label>
+          <input id="arpQuickIp" class="mono" style="width: 100%" placeholder="10.133.152.242" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>VRF名称（如 vbgp10133152242）</label>
+          <input id="arpQuickVrf" class="mono" style="width: 100%" placeholder="vbgp10133152242" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>接口</label>
+          <select id="arpQuickIface" class="mono" style="width: 100%"></select>
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>备注</label>
+          <input id="arpQuickNote" style="width: 100%" placeholder="自动化测试" autocomplete="off" />
+        </div>
+        <p class="small" style="margin-top: 8px; margin-bottom: 12px; color: var(--warn)">
+          添加后会自动创建卫星VRF（路由、接口等），并自动下发到 Linux 201 的 BGP 邻居（默认 10.133.152.204 / AS65201）
+        </p>
+        <div class="row" style="justify-content: flex-end; gap: 10px">
+          <button type="button" class="btn" id="arpQuickCancel">取消</button>
+          <button type="button" class="btn primary" id="arpQuickSave">添加并同步VRF+BGP</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="dlgBgpEdit" style="border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 0; background: #131c2e; color: rgba(255,255,255,0.92); max-width: 440px; box-shadow: var(--shadow)">
+      <div style="padding: 16px 18px">
+        <div style="font-weight: 720; margin-bottom: 12px">编辑 BGP 邻居 <span class="mono" id="bgpEdTitle"></span></div>
+        <input type="hidden" id="bgpEdVrf" />
+        <input type="hidden" id="bgpEdOrigIp" />
+        <div class="field" style="margin-bottom: 10px">
+          <label>邻居 IP（对端 BGP 地址）</label>
+          <input id="bgpEdNeighborIp" class="mono" style="width: 100%" placeholder="10.133.152.204" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>Remote AS</label>
+          <input id="bgpEdAs" type="number" class="mono" style="width: 100%" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>角色</label>
+          <select id="bgpEdRole" class="mono" style="width: 100%">
+            <option value="auto">自动（默认映射）</option>
+            <option value="downstream">下游运营商</option>
+            <option value="upstream">上游运营商</option>
+            <option value="rr">RR（路由反射客户端）</option>
+            <option value="unknown">未知</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>备注</label>
+          <input id="bgpEdNote" style="width: 100%" placeholder="运维备注" autocomplete="off" />
+        </div>
+        <div class="field" style="margin-bottom: 10px">
+          <label>TCP 源（BGP update-source）</label>
+          <input id="bgpEdSource" class="mono" list="bgpSourceIpList" style="width: 100%" placeholder="与 ARP 冒充网关一致；留空并保存可清除" autocomplete="off" />
+        </div>
+        <p class="small" style="margin-bottom: 12px">修改 AS 或邻居 IP 会短暂中断会话（后端删后重建）。改邻居 IP 时勿与已有邻居重复。</p>
+        <div class="row" style="justify-content: flex-end; gap: 10px">
+          <button type="button" class="btn" id="bgpEdCancel">取消</button>
+          <button type="button" class="btn primary" id="bgpEdSave">保存</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script>
+      const $ = (s, r = document) => r.querySelector(s);
+      const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+
+      /** 与 FastAPI 同源部署时留空；本地 file:// 打开时可改为完整 URL */
+      const API_BASE = "";
+      /** BGP 列表自动刷新间隔（毫秒）；仅在本页可见且勾选「自动刷新」时生效 */
+      const BGP_POLL_MS = 15000;
+
+      let bgpPollTimer = null;
+      let bgpRefreshInFlight = false;
+      /** GET /api/bgp/vrfs 最近一次缓存，供 VRF 下拉筛选（不重复请求） */
+      let _bgpVrfListCache = [];
+
+      function stopBgpPoll() {
+        if (bgpPollTimer != null) {
+          clearInterval(bgpPollTimer);
+          bgpPollTimer = null;
+        }
+      }
+
+      function startBgpPoll() {
+        stopBgpPoll();
+        const el = $("#bgpAutoRefresh");
+        if (!el?.checked) return;
+        bgpPollTimer = setInterval(() => {
+          if (document.hidden) return;
+          if (bgpRefreshInFlight) return;
+          bgpRefreshInFlight = true;
+          refreshBGP()
+            .catch(() => {})
+            .finally(() => {
+              bgpRefreshInFlight = false;
+            });
+        }, BGP_POLL_MS);
+      }
+
+      const BR_ROUTES_POLL_MS = 20000;
+      let brRoutesPollTimer = null;
+      let brRoutesBusy = false;
+      let brCurrentPage = 1;
+      let brTotalPages = 1;
+
+      function stopBrRoutesPoll() {
+        if (brRoutesPollTimer != null) {
+          clearInterval(brRoutesPollTimer);
+          brRoutesPollTimer = null;
+        }
+      }
+
+      function startBrRoutesPoll() {
+        stopBrRoutesPoll();
+        const el = $("#brAutoRefresh");
+        if (!el?.checked) return;
+        brRoutesPollTimer = setInterval(() => {
+          if (document.hidden) return;
+          if (brRoutesBusy) return;
+          brRoutesBusy = true;
+          loadLearnedRoutes()
+            .catch(() => {})
+            .finally(() => {
+              brRoutesBusy = false;
+            });
+        }, BR_ROUTES_POLL_MS);
+      }
+
+      function toast(msg) {
+        const el = $("#toast");
+        el.textContent = msg;
+        el.classList.add("show");
+        clearTimeout(toast._t);
+        toast._t = setTimeout(() => el.classList.remove("show"), 3200);
+      }
+
+      function tag(level, txt) {
+        const cls = level === "good" ? "good" : level === "bad" ? "bad" : "warn";
+        return `<span class="tag ${cls}"><span class="dot"></span>${txt}</span>`;
+      }
+
+      async function apiFetch(path, opt = {}) {
+        const url = API_BASE + path;
+        const headers = { Accept: "application/json", ...opt.headers };
+        if (opt.body && !(opt.body instanceof FormData) && !headers["Content-Type"]) {
+          headers["Content-Type"] = "application/json";
+        }
+        const r = await fetch(url, { ...opt, headers });
+        const text = await r.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = text;
+        }
+        if (!r.ok) {
+          const err = new Error(typeof data === "object" && data && data.detail ? JSON.stringify(data.detail) : r.statusText);
+          err.status = r.status;
+          err.body = data;
+          throw err;
+        }
+        return data;
+      }
+
+      async function loadHealth() {
+        const tag = $("#tagHealth");
+        try {
+          await apiFetch("/health");
+          tag.className = "tag good";
+          tag.innerHTML = '<span class="dot"></span>正常';
+          $("#kpiApi").textContent = "OK";
+          return true;
+        } catch {
+          tag.className = "tag warn";
+          tag.innerHTML = '<span class="dot"></span>不可用';
+          $("#kpiApi").textContent = "离线";
+          return false;
+        }
+      }
+
+      async function loadGlobal() {
+        try {
+          const g = await apiFetch("/api/global");
+          const on = !!(g && (g.hijack_enabled ?? g.hijackEnabled));
+          const tag = $("#tagHijack");
+          tag.className = `tag ${on ? "good" : "warn"}`;
+          tag.innerHTML = `<span class="dot"></span>${on ? "已开启" : "已关闭"}`;
+          $("#btnToggleHijack").textContent = on ? "关闭" : "开启";
+        } catch {
+          $("#tagHijack").className = "tag warn";
+          $("#tagHijack").innerHTML = '<span class="dot"></span>未知';
+          $("#btnToggleHijack").textContent = "重试";
+        }
+      }
+
+      async function toggleGlobal() {
+        const btn = $("#btnToggleHijack");
+        btn.disabled = true;
+        try {
+          const cur = await apiFetch("/api/global").catch(() => ({}));
+          const on = !!(cur && (cur.hijack_enabled ?? cur.hijackEnabled));
+          await apiFetch("/api/global", {
+            method: "PUT",
+            body: JSON.stringify({ hijack_enabled: !on }),
+          });
+          toast(`MTR/ICMP 逐跳替换已${!on ? "开启" : "关闭"}`);
+          await loadGlobal();
+        } catch {
+          toast("切换失败（后端未实现或不可达）");
+          await loadGlobal();
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      function showPage(name) {
+        $$(".page").forEach((p) => p.classList.toggle("show", p.dataset.page === name));
+        $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === name));
+        const meta = {
+          dash: ["总览", "功能开关、服务状态与规则统计"],
+          bgp: ["BGP 管理", "Linux 200 / FRR：邻居新增、启停与状态（vtysh）"],
+          "bgp-routes": ["BGP 学习路由", "SQLite 快照；可按 VRF / 来源邻居 IP 筛选；后台定时 vtysh 写库"],
+          rules: ["逐跳替换规则", "目的 IP 由客户端 Echo 自动发现；探测命中 CIDR 则伪造 ICMP TE"],
+          gateway: ["ARP 引流", "配置接口与冒充网关 IPv4（二层 ARP，独立 NFQUEUE）"],
+          vpn: ["VPN 出口", "GRE / OpenVPN / L2TP 隧道进 vrf2103；策略路由与下发"],
+        };
+        const [t, d] = meta[name] || ["", ""];
+        $("#pageTitle").textContent = t;
+        $("#pageDesc").textContent = d;
+        if (name === "bgp") {
+          stopBrRoutesPoll();
+          stopBgpPoll();
+          refreshBGP();
+          startBgpPoll();
+        } else if (name === "bgp-routes") {
+          stopBgpPoll();
+          stopBrRoutesPoll();
+          (async () => {
+            await loadLearnedRouteFilters();
+            await loadLearnedRoutes();
+            startBrRoutesPoll();
+          })();
+        } else {
+          stopBgpPoll();
+          stopBrRoutesPoll();
+        }
+        if (name === "rules") loadHopRules();
+        if (name === "gateway") loadArpSpoofPage();
+        if (name === "vpn") loadVpnPage();
+      }
+
+      $$(".nav a").forEach((a) =>
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          showPage(a.dataset.page);
+        }),
+      );
+
+      $("#btnRefresh").addEventListener("click", async () => {
+        await refreshAll();
+        toast("已刷新");
+      });
+      $("#btnBgpRefresh")?.addEventListener("click", () => refreshBGP());
+      $("#bgpAutoRefresh")?.addEventListener("change", () => {
+        if ($(".page.show")?.dataset?.page !== "bgp") return;
+        if ($("#bgpAutoRefresh")?.checked) startBgpPoll();
+        else stopBgpPoll();
+      });
+      $("#btnBgpSyncMeta")?.addEventListener("click", async () => {
+        try {
+          const j = await apiFetch("/api/bgp/sync-from-frr", { method: "POST" });
+          const extra = Array.isArray(j?.presets_applied) && j.presets_applied.length ? `（${j.presets_applied.join("，")}）` : "";
+          toast(`已从 FRR 合并邻居并写入角色${extra}`);
+          await refreshBGP();
+        } catch (e) {
+          toast(`同步失败：${String(e).slice(0, 100)}`);
+        }
+      });
+      $("#bgpEdCancel")?.addEventListener("click", () => $("#dlgBgpEdit").close());
+      $("#bgpEdSave")?.addEventListener("click", () => saveBgpEdit());
+      $("#btnToggleHijack").addEventListener("click", () => toggleGlobal());
+      $("#btnToggleArpSpoof").addEventListener("click", () => toggleArpSpoof());
+      $("#btnAddArpTarget")?.addEventListener("click", () => openArpEdit(null));
+      $("#arpDlgCancel")?.addEventListener("click", () => $("#dlgArpEdit").close());
+      $("#arpDlgSave")?.addEventListener("click", () => saveArpDlg());
+      $("#btnAddHopRule")?.addEventListener("click", () => addHopRule());
+      $("#btnBgpAdd")?.addEventListener("click", () => addBgpNeighbor());
+
+      $("#btnBrRefresh")?.addEventListener("click", () => loadLearnedRoutes());
+      $("#brFilterVrf")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
+      $("#brFilterNeighbor")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
+      $("#brPageSize")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
+      $("#brPageFirst")?.addEventListener("click", brGoFirst);
+      $("#brPagePrev")?.addEventListener("click", brGoPrev);
+      $("#brPageNext")?.addEventListener("click", brGoNext);
+      $("#brPageLast")?.addEventListener("click", brGoLast);
+      $("#brPageGo")?.addEventListener("click", brGoJump);
+      $("#btnBrSync")?.addEventListener("click", async () => {
+        const b = $("#btnBrSync");
+        if (b) b.disabled = true;
+        try {
+          await apiFetch("/api/bgp/learned-routes/sync", { method: "POST" });
+          toast("已从 FRR 同步到数据库");
+          await loadLearnedRouteFilters();
+          await loadLearnedRoutes();
+        } catch (e) {
+          toast(`同步失败：${String(e).slice(0, 100)}`);
+        } finally {
+          if (b) b.disabled = false;
+        }
+      });
+      $("#brAutoRefresh")?.addEventListener("change", () => {
+        if ($(".page.show")?.dataset?.page !== "bgp-routes") return;
+        if ($("#brAutoRefresh")?.checked) startBrRoutesPoll();
+        else stopBrRoutesPoll();
+      });
+
+      function bgpRoleTag(role) {
+        if (role === "upstream") return tag("warn", "上游运营商");
+        if (role === "downstream") return tag("good", "下游运营商");
+        if (role === "rr") return tag("good", "RR");
+        return tag("warn", "未知");
+      }
+
+      function bgpRoleSrcLabel(rs) {
+        if (rs === "manual") return tag("good", "手动");
+        if (rs === "hint") return tag("warn", "默认映射");
+        return tag("warn", "—");
+      }
+
+      const BGP_IPVLAN_PEER_IP = "10.133.152.204";
+      const BGP_IPVLAN_REMOTE_AS = 65201;
+      const BGP_IPVLAN_LOCAL_AS = 65200;
+
+      function ipWithoutDots(ip) {
+        return String(ip || "").replace(/\./g, "");
+      }
+
+      function defaultVbgpForIp(ip) {
+        const ipNoDots = ipWithoutDots(ip);
+        return ipNoDots ? `vbgp${ipNoDots}` : "";
+      }
+
+      function prefillBgpFromArp(row) {
+        const ip = String(row?.spoof_gateway_ip || "").trim();
+        const vrf = String(row?.satellite_vrf || "").trim() || defaultVbgpForIp(ip);
+        if (!ip || !vrf) {
+          toast("该 ARP 条目缺少冒充 IP 或 VRF");
+          return;
+        }
+        showPage("bgp");
+        $("#bgpVrf").value = vrf;
+        $("#bgpPeerIp").value = BGP_IPVLAN_PEER_IP;
+        $("#bgpPeerAs").value = String(BGP_IPVLAN_REMOTE_AS);
+        $("#bgpPeerRole").value = "downstream";
+        $("#bgpPeerSource").value = ip;
+        if ($("#bgpEnsureAs")) $("#bgpEnsureAs").value = String(BGP_IPVLAN_LOCAL_AS);
+        if ($("#bgpEnsureRid")) $("#bgpEnsureRid").value = ip;
+        toast(`已带入 BGP 表单：${vrf} / source ${ip}`);
+      }
+
+      async function addBgpNeighborForArp(ip, vrf) {
+        const payload = {
+          vrf,
+          neighbor_ip: BGP_IPVLAN_PEER_IP,
+          remote_as: BGP_IPVLAN_REMOTE_AS,
+          role: "downstream",
+          bgp_local_as: BGP_IPVLAN_LOCAL_AS,
+          bgp_router_id: ip,
+          create_kernel_vrf_if_missing: true,
+        };
+        return apiFetch("/api/bgp/neighbors", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+
+      function bgpStateTag(state, enabled) {
+        const s = String(state || "");
+        if (!enabled) return tag("bad", "已关闭");
+        if (s.toLowerCase().includes("established")) return tag("good", "Established");
+        if (s.toLowerCase().includes("idle")) return tag("warn", s || "Idle");
+        if (!s || s === "Unknown") return tag("warn", "Unknown");
+        return tag("warn", s);
+      }
+
+      function learnedRoutesQueryPath() {
+        const qs = new URLSearchParams();
+        const vf = ($("#brFilterVrf")?.value || "").trim();
+        const nip = ($("#brFilterNeighbor")?.value || "").trim();
+        const ps = Number($("#brPageSize")?.value || 100);
+        if (vf) qs.set("vrf", vf);
+        if (nip) qs.set("neighbor_ip", nip);
+        qs.set("page", String(brCurrentPage));
+        qs.set("page_size", String(ps));
+        const s = qs.toString();
+        return s ? `/api/bgp/learned-routes?${s}` : "/api/bgp/learned-routes";
+      }
+
+      async function loadLearnedRouteFilters() {
+        const vs = $("#brFilterVrf");
+        const ns = $("#brFilterNeighbor");
+        if (!vs || !ns) return;
+        const vPrev = vs.value;
+        const nPrev = ns.value;
+        try {
+          const j = await apiFetch("/api/bgp/learned-routes/filter-options");
+          const vrfs = Array.isArray(j.vrfs) ? j.vrfs : [];
+          const ips = Array.isArray(j.neighbor_ips) ? j.neighbor_ips : [];
+          vs.innerHTML = '<option value="">全部</option>';
+          vrfs.forEach((x) => {
+            const o = document.createElement("option");
+            o.value = String(x);
+            o.textContent = String(x);
+            vs.appendChild(o);
+          });
+          ns.innerHTML = '<option value="">全部</option>';
+          ips.forEach((x) => {
+            const o = document.createElement("option");
+            o.value = String(x);
+            o.textContent = String(x);
+            ns.appendChild(o);
+          });
+          if ([...vs.options].some((op) => op.value === vPrev)) vs.value = vPrev;
+          if ([...ns.options].some((op) => op.value === nPrev)) ns.value = nPrev;
+        } catch {
+          /* 保留「全部」 */
+        }
+      }
+
+      async function loadLearnedRoutes() {
+        const meta = $("#brSyncMeta");
+        const tbody = $("#brRoutesBody");
+        if (!tbody) return;
+        const attrEsc = (s) =>
+          String(s || "")
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;");
+        const dsTips = {
+          rib_sqlite:
+            "读 SQLite 表 bgp_learned_routes。后台最近一次 RIB 同步成功时写入；页面与 API 均不实时查 FRR，仅读库。",
+          rib_sqlite_sync_failed:
+            "读 SQLite 表 bgp_learned_routes。最近一次后台 RIB 同步失败，为此前保留的快照，可能与当前 FRR 不一致。",
+          upstream_cache_sqlite:
+            "读 SQLite 表 bgp_upstream_route_cache 合并展示；当前学习 VRF 的 RIB 快照中已无此前缀（常见于上游断链后仍展示历史前缀）。",
+        };
+        const dsLabel = (r) => {
+          const key = r.data_source || (r.stale ? "upstream_cache_sqlite" : "rib_sqlite");
+          const tip = dsTips[key] || "";
+          if (key === "rib_sqlite") return `<span class="small" title="${attrEsc(tip)}">${tag("good", "RIB 入库快照")}</span>`;
+          if (key === "rib_sqlite_sync_failed")
+            return `<span class="small" title="${attrEsc(tip)}">${tag("bad", "RIB·同步失败")}</span>`;
+          if (key === "upstream_cache_sqlite")
+            return `<span class="small" title="${attrEsc(tip)}">${tag("warn", "上游持久缓存")}</span>`;
+          return `<span class="small mono" title="${attrEsc(tip)}">${key}</span>`;
+        };
+        try {
+          const j = await apiFetch(learnedRoutesQueryPath());
+          const ok = j.last_sync_ok !== false && j.last_sync_ok !== 0;
+          if (meta) {
+            const err = (j.last_sync_error || "").trim();
+            meta.textContent = `上次同步: ${j.last_sync_at || "—"} · ${ok ? "成功" : "失败"}${err ? " · " + err.slice(0, 160) : ""}`;
+          }
+          const routes = Array.isArray(j.routes) ? j.routes : [];
+          const total = Number(j.total || 0);
+          const page = Number(j.page || 1);
+          const pageSize = Number(j.page_size || 100);
+          brCurrentPage = page;
+          brTotalPages = Math.ceil(total / pageSize);
+          routes.sort((a, b) => {
+            const c = String(a.vrf || "").localeCompare(String(b.vrf || ""));
+            return c !== 0 ? c : String(a.prefix || "").localeCompare(String(b.prefix || ""));
+          });
+          tbody.innerHTML = "";
+          if (!routes.length) {
+            tbody.innerHTML =
+              '<tr><td colspan="10" class="small">暂无数据：等待后台定时写入 SQLite，或点「从 FRR 同步入库」。</td></tr>';
+            updatePaginationUI();
+            return;
+          }
+          routes.forEach((r) => {
+            const tr = document.createElement("tr");
+            const rawPath = String(r.as_path || "");
+            const ap = rawPath.length > 64 ? rawPath.slice(0, 64) + "…" : rawPath;
+            const esc = rawPath.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+            tr.innerHTML = `
+            <td class="mono">${r.vrf}</td>
+            <td class="mono">${r.prefix}</td>
+            <td class="mono">${r.nexthop || "—"}</td>
+            <td>${bgpRoleTag(r.role)}</td>
+            <td class="mono">${r.neighbor_ip || "—"}</td>
+            <td class="mono">${Number(r.remote_as || 0)}</td>
+            <td class="mono small" title="${esc}">${ap.replace(/</g, "&lt;")}</td>
+            <td class="small">${r.updated_at || "—"}</td>
+            <td>${r.persisted ? tag("good", "是") : tag("warn", "否")}</td>
+            <td class="small">${dsLabel(r)}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+          updatePaginationUI(total);
+        } catch (e) {
+          tbody.innerHTML = `<tr><td colspan="10" class="small">加载失败：${String(e.message || e).slice(0, 220)}</td></tr>`;
+          updatePaginationUI(0);
+        }
+      }
+
+      function updatePaginationUI(total = 0) {
+        const pageSize = Number($("#brPageSize")?.value || 100);
+        brTotalPages = Math.ceil(total / pageSize);
+        $("#brPageInfo").textContent = `${brCurrentPage} / ${brTotalPages} · 共 ${total} 条`;
+        $("#brPageFirst").disabled = brCurrentPage <= 1;
+        $("#brPagePrev").disabled = brCurrentPage <= 1;
+        $("#brPageNext").disabled = brCurrentPage >= brTotalPages;
+        $("#brPageLast").disabled = brCurrentPage >= brTotalPages;
+      }
+
+      function brGoToPage(page) {
+        if (page < 1 || page > brTotalPages || page === brCurrentPage) return;
+        brCurrentPage = page;
+        loadLearnedRoutes();
+      }
+
+      function brGoFirst() { brGoToPage(1); }
+      function brGoPrev() { brGoToPage(brCurrentPage - 1); }
+      function brGoNext() { brGoToPage(brCurrentPage + 1); }
+      function brGoLast() { brGoToPage(brTotalPages); }
+      function brGoJump() {
+        const jumpTo = Number($("#brPageJump")?.value || 1);
+        brGoToPage(jumpTo);
+      }
+
+      async function loadBgpSourceHints() {
+        const dl = $("#bgpSourceIpList");
+        if (!dl) return;
+        try {
+          const j = await apiFetch("/api/bgp/neighbor-form-hints");
+          const ips = Array.isArray(j?.arp_spoof_gateway_ips) ? j.arp_spoof_gateway_ips : [];
+          dl.innerHTML = "";
+          ips.forEach((ip) => {
+            const o = document.createElement("option");
+            o.value = String(ip);
+            dl.appendChild(o);
+          });
+        } catch {
+          /* 忽略：ARP 页未配置或旧后端 */
+        }
+      }
+
+      function openBgpEdit(r) {
+        $("#bgpEdVrf").value = r.vrf;
+        const nip = String(r.neighbor_ip || "").trim();
+        $("#bgpEdOrigIp").value = nip;
+        $("#bgpEdNeighborIp").value = nip;
+        $("#bgpEdTitle").textContent = `${r.vrf} / ${nip}`;
+        $("#bgpEdAs").value = String(r.remote_as ?? "");
+        $("#bgpEdNote").value = r.note || "";
+        $("#bgpEdSource").value = r.source_ip || "";
+        if (r.role_source === "manual") {
+          const mr = ["upstream", "downstream", "rr", "unknown"];
+          $("#bgpEdRole").value = mr.includes(r.role) ? r.role : "unknown";
+        } else {
+          $("#bgpEdRole").value = "auto";
+        }
+        $("#dlgBgpEdit").showModal();
+      }
+
+      async function saveBgpEdit() {
+        const vrf = $("#bgpEdVrf").value;
+        const origIp = ($("#bgpEdOrigIp").value || "").trim();
+        const neighborIp = ($("#bgpEdNeighborIp").value || "").trim();
+        const remote_as = Number($("#bgpEdAs").value || 0);
+        const sel = $("#bgpEdRole").value;
+        const note = $("#bgpEdNote").value.trim();
+        const source_ip = $("#bgpEdSource").value.trim();
+        if (!neighborIp) {
+          toast("请填写邻居 IP");
+          return;
+        }
+        if (!remote_as) {
+          toast("请填写 Remote AS");
+          return;
+        }
+        const body = { remote_as, note, source_ip };
+        body.role = sel === "auto" ? "unknown" : sel;
+        if (neighborIp !== origIp) body.neighbor_ip = neighborIp;
+        $("#bgpEdSave").disabled = true;
+        try {
+          await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(vrf)}/${encodeURIComponent(origIp)}`, {
+            method: "PATCH",
+            body: JSON.stringify(body),
+          });
+          toast("已保存");
+          $("#dlgBgpEdit").close();
+          await refreshBGP();
+        } catch (e) {
+          toast(`保存失败：${String(e).slice(0, 120)}`);
+        } finally {
+          $("#bgpEdSave").disabled = false;
+        }
+      }
+
+      async function deleteBgpNeighbor(r) {
+        if (!confirm(`确定从 FRR 删除邻居 ${r.neighbor_ip} ？`)) return;
+        try {
+          await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}`, {
+            method: "DELETE",
+          });
+          toast("已删除邻居");
+          await refreshBGP();
+        } catch (e) {
+          toast(`删除失败：${String(e).slice(0, 120)}`);
+        }
+      }
+
+      function _bgpVrfGroupRank(vrf) {
+        const n = String(vrf || "");
+        if (n === "default") return 0;
+        if (/^vrf\d+/i.test(n)) return 1;
+        if (/^vbgp\d+$/i.test(n)) return 2;
+        return 3;
+      }
+
+      function _bgpVbgpSortKey(vrf) {
+        const m = String(vrf).match(/^vbgp(\d+)$/i);
+        return m ? parseInt(m[1], 10) : 0;
+      }
+
+      function sortVrfsForBgpSelect(vrfs) {
+        return [...vrfs].sort((a, b) => {
+          const ra = _bgpVrfGroupRank(a.vrf);
+          const rb = _bgpVrfGroupRank(b.vrf);
+          if (ra !== rb) return ra - rb;
+          if (ra === 2) return _bgpVbgpSortKey(a.vrf) - _bgpVbgpSortKey(b.vrf);
+          return String(a.vrf).localeCompare(String(b.vrf), undefined, { numeric: true, sensitivity: "base" });
+        });
+      }
+
+      function rebuildBgpVrfDatalist(preferVal) {
+        const sel = $("#bgpVrf");
+        if (!sel) return;
+        const base = Array.isArray(_bgpVrfListCache) ? _bgpVrfListCache : [];
+        const sorted = sortVrfsForBgpSelect(base);
+        sel.innerHTML = '<option value="" disabled>请选择 VRF</option>';
+
+        function oneLabel(v) {
+          return v.vrf;
+        }
+
+        if (base.length) {
+          sorted.forEach((v) => {
+            const o = document.createElement("option");
+            o.value = v.vrf;
+            o.textContent = oneLabel(v);
+            sel.appendChild(o);
+          });
+        } else {
+          const o = document.createElement("option");
+          o.value = "default";
+          o.textContent = "default";
+          sel.appendChild(o);
+        }
+
+        const keep = (preferVal || "").trim();
+        if (keep) {
+          sel.value = keep;
+        }
+      }
+
+      async function refreshBGP() {
+        const inp = $("#bgpVrf");
+        if (!inp) return;
+        try {
+          // 只获取 ARP 引流条目中配置的 satellite_vrf
+          const satelliteVrfs = await apiFetch("/api/bgp/satellite-vrfs").catch(() => ({ vrfs: [] }));
+          const fallbackAs = 63199;
+          _bgpVrfListCache = (satelliteVrfs?.vrfs || [])
+            .filter(v => v.startsWith('vbgp'))
+            .map(v => ({
+              vrf: v,
+              local_as: fallbackAs,
+              has_router_bgp: false
+            }));
+          
+          await loadBgpSourceHints();
+          const cur = (inp.value || "").trim();
+          rebuildBgpVrfDatalist(cur);
+
+          const rows = await apiFetch("/api/bgp/neighbors").catch(() => []);
+          if (Array.isArray(rows)) {
+            rows.sort((a, b) => {
+              const ra = _bgpVrfGroupRank(a.vrf);
+              const rb = _bgpVrfGroupRank(b.vrf);
+              if (ra !== rb) return ra - rb;
+              const c = String(a.vrf || "").localeCompare(String(b.vrf || ""), undefined, { numeric: true, sensitivity: "base" });
+              return c !== 0 ? c : String(a.neighbor_ip || "").localeCompare(String(b.neighbor_ip || ""));
+            });
+          }
+          const tbody = $("#bgpBody");
+          tbody.innerHTML = "";
+          if (!Array.isArray(rows) || rows.length === 0) {
+            tbody.innerHTML =
+              '<tr><td colspan="19" class="small">暂无邻居：请检查 FRR / vtysh；若需添加，在下方选择「新增所在 VRF」后点新增。</td></tr>';
+            return;
+          }
+          rows.forEach((r) => {
+            const tr = document.createElement("tr");
+            const advEnabled = Number(r.advertise_routes ?? 0) === 1;
+            const advFrom = r.advertise_routes_from || "";
+            tr.innerHTML = `
+            <td class="mono">${r.vrf}</td>
+            <td class="mono">${r.local_as ?? "—"}</td>
+            <td class="mono">${r.neighbor_ip}</td>
+            <td class="mono">${Number(r.neighbor_ver ?? 0)}</td>
+            <td class="mono">${r.remote_as}</td>
+            <td class="mono">${Number(r.msg_rcvd ?? 0)}</td>
+            <td class="mono">${Number(r.msg_sent ?? 0)}</td>
+            <td class="mono">${Number(r.tbl_ver ?? 0)}</td>
+            <td class="mono">${Number(r.inq ?? 0)}</td>
+            <td class="mono">${Number(r.outq ?? 0)}</td>
+            <td class="mono">${r.source_ip || "—"}</td>
+            <td>${bgpRoleTag(r.role)}</td>
+            <td>${bgpRoleSrcLabel(r.role_source)}</td>
+            <td>${bgpStateTag(r.session_state, r.enabled)}</td>
+            <td class="mono">${Number(r.pfx_rcd || 0)}</td>
+            <td class="mono">${r.up_down || "—"}</td>
+            <td>
+              <label class="bgp-sw" title="邻居启停">
+                <input type="checkbox" ${r.enabled ? "checked" : ""} />
+                <span class="track"><span class="knob"></span></span>
+                <span class="cap">${r.enabled ? "开启" : "关闭"}</span>
+              </label>
+            </td>
+            <td>
+              <div class="row" style="gap: 4px; align-items: center; flex-wrap: nowrap;">
+                <label class="bgp-sw" title="路由通告开关" style="margin: 0">
+                  <input type="checkbox" class="adv-sw" ${advEnabled ? "checked" : ""} />
+                  <span class="track"><span class="knob"></span></span>
+                </label>
+                <input type="text" class="mono adv-from" value="${advFrom}" placeholder="来源邻居IP" style="width: 110px; font-size: 11px" ${advEnabled ? "" : "disabled"} />
+                <button type="button" class="btn adv-apply" ${advEnabled && advFrom ? "" : "disabled"}>应用</button>
+              </div>
+            </td>
+            <td class="row" style="flex-wrap: nowrap; gap: 6px">
+              <button type="button" class="btn" data-act="bgp-ed">编辑</button>
+              <button type="button" class="btn danger" data-act="bgp-del">删除</button>
+            </td>
+          `;
+            tr.querySelector('[data-act="bgp-ed"]').addEventListener("click", () => openBgpEdit(r));
+            tr.querySelector('[data-act="bgp-del"]').addEventListener("click", () => deleteBgpNeighbor(r));
+            const sw = tr.querySelector("input[type=checkbox]");
+            const cap = tr.querySelector(".cap");
+            sw.addEventListener("change", async () => {
+              const want = !!sw.checked;
+              sw.disabled = true;
+              try {
+                await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/toggle`, {
+                  method: "POST",
+                  body: JSON.stringify({ enabled: want }),
+                });
+                if (cap) cap.textContent = want ? "开启" : "关闭";
+                toast(want ? "已开启邻居（已下发 FRR）" : "已关闭邻居（已下发 FRR）");
+                await refreshBGP();
+              } catch (e) {
+                sw.checked = !want;
+                toast(`切换失败：${String(e).slice(0, 120)}`);
+              } finally {
+                sw.disabled = false;
+              }
+            });
+
+            const advSw = tr.querySelector(".adv-sw");
+            const advFromEl = tr.querySelector(".adv-from");
+            const advApply = tr.querySelector(".adv-apply");
+
+            advSw.addEventListener("change", async () => {
+              const wantAdv = !!advSw.checked;
+              advFromEl.disabled = !wantAdv;
+              if (!wantAdv) {
+                advApply.disabled = true;
+              } else if (advFromEl.value.trim()) {
+                advApply.disabled = false;
+              }
+            });
+
+            advFromEl.addEventListener("input", () => {
+              if (advFromEl.value.trim() && advSw.checked) {
+                advApply.disabled = false;
+              } else {
+                advApply.disabled = true;
+              }
+            });
+
+            advApply.addEventListener("click", async () => {
+              const wantAdv = !!advSw.checked;
+              const fromIp = (advFromEl.value || "").trim();
+              if (!fromIp) {
+                toast("请输入来源邻居IP");
+                return;
+              }
+              advApply.disabled = true;
+              advSw.disabled = true;
+              advFromEl.disabled = true;
+              try {
+                const result = await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/advertise`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    advertise_routes: wantAdv ? 1 : 0,
+                    advertise_routes_from: fromIp
+                  }),
+                });
+                toast(`路由通告已${wantAdv ? "启用" : "禁用"}，将从 ${fromIp} 学习路由`);
+                
+                if (wantAdv) {
+                  advApply.textContent = "处理中...";
+                  await pollAdvertiseStatus(r.vrf, r.neighbor_ip, advApply, advSw, advFromEl);
+                }
+                
+                await refreshBGP();
+              } catch (e) {
+                toast(`操作失败：${String(e).slice(0, 120)}`);
+                advApply.disabled = false;
+                advSw.disabled = false;
+                advFromEl.disabled = !advSw.checked;
+              }
+            });
+
+            async function pollAdvertiseStatus(vrf, neighborIp, applyBtn, sw, fromInput) {
+              const maxAttempts = 240;
+              const pollInterval = 5000;
+              let attempts = 0;
+              
+              while (attempts < maxAttempts) {
+                try {
+                  const status = await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(vrf)}/${encodeURIComponent(neighborIp)}/advertise/status`);
+                  
+                  if (status.status === "completed") {
+                    applyBtn.textContent = "完成";
+                    toast(`路由通告完成：已通告 ${status.added}/${status.total_routes} 条路由`);
+                    break;
+                  } else if (status.status === "error") {
+                    applyBtn.textContent = "应用";
+                    toast(`路由通告失败：${status.message}`);
+                    break;
+                  } else if (status.status === "running") {
+                    if (status.progress > 0) {
+                      applyBtn.textContent = `${status.progress}%`;
+                    } else {
+                      applyBtn.textContent = "处理中";
+                    }
+                    if (status.message) {
+                      console.log(`Advertise progress: ${status.message}`);
+                    }
+                  } else if (status.status === "idle") {
+                    break;
+                  }
+                } catch (e) {
+                  console.log(`Poll error: ${e}`);
+                }
+                
+                attempts++;
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+              }
+              
+              applyBtn.textContent = "应用";
+              sw.disabled = false;
+              fromInput.disabled = !sw.checked;
+              applyBtn.disabled = !(sw.checked && fromInput.value.trim());
+            }
+
+            tbody.appendChild(tr);
+          });
+        } catch (e) {
+          const tbody = $("#bgpBody");
+          if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="18" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
+          }
+          toast(`BGP 列表加载失败：${String(e.message || e).slice(0, 80)}`);
+        }
+      }
+
+      async function addBgpNeighbor() {
+        const vrf = ($("#bgpVrf").value || "").trim();
+        if (!vrf) {
+          toast("请填写或选择 VRF 名称");
+          return;
+        }
+        const neighbor_ip = ($("#bgpPeerIp").value || "").trim();
+        const remote_as = Number($("#bgpPeerAs").value || 0);
+        const role = ($("#bgpPeerRole").value || "unknown").trim();
+        if (!neighbor_ip || !remote_as) {
+          toast("请输入邻居IP与 Remote AS");
+          return;
+        }
+        const src = ($("#bgpPeerSource").value || "").trim();
+        $("#btnBgpAdd").disabled = true;
+        try {
+          const payload = { vrf, neighbor_ip, remote_as, role };
+          if (src) payload.source_ip = src;
+          payload.create_kernel_vrf_if_missing = true;
+          const eas = Number($("#bgpEnsureAs")?.value || 0);
+          if (eas > 0 && eas <= 4294967295) payload.bgp_local_as = eas;
+          const erad = ($("#bgpEnsureRid")?.value || "").trim();
+          if (erad) payload.bgp_router_id = erad;
+          await apiFetch("/api/bgp/neighbors", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          $("#bgpPeerIp").value = "";
+          $("#bgpPeerAs").value = "";
+          $("#bgpPeerSource").value = "";
+          if ($("#bgpEnsureAs")) $("#bgpEnsureAs").value = "";
+          if ($("#bgpEnsureRid")) $("#bgpEnsureRid").value = "";
+          toast("已下发新增邻居（等待 BGP 建连）");
+          await refreshBGP();
+        } catch (e) {
+          let msg = String(e.message || e);
+          if (e.body && e.body.detail) {
+            const d = e.body.detail;
+            if (typeof d === "string") msg = d;
+            else if (d && typeof d.message === "string") msg = d.message;
+            else msg = JSON.stringify(d);
+          }
+          toast(`新增失败：${msg.slice(0, 400)}`);
+        } finally {
+          $("#btnBgpAdd").disabled = false;
+        }
+      }
+
+      function openHopEdit(r) {
+        $("#edId").value = String(r.id);
+        $("#edIdLbl").textContent = "#" + r.id;
+        $("#edCidr").value = r.match_cidr || "";
+        $("#edForge").value = r.forged_src || "";
+        $("#edPri").value = r.priority ?? 0;
+        $("#edNote").value = r.note || "";
+        $("#edEn").checked = r.enabled !== false;
+        $("#dlgHopEdit").showModal();
+      }
+
+      async function saveHopEdit() {
+        const id = $("#edId").value;
+        if (!id) return;
+        const body = {
+          match_cidr: $("#edCidr").value.trim(),
+          forged_src: $("#edForge").value.trim(),
+          priority: Number($("#edPri").value || 0),
+          enabled: $("#edEn").checked,
+          note: $("#edNote").value.trim(),
+        };
+        if (!body.match_cidr || !body.forged_src) {
+          toast("请填写 CIDR 与 forged_src");
+          return;
+        }
+        try {
+          await apiFetch(`/api/hop-rules/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+          toast("已保存");
+          $("#dlgHopEdit").close();
+          await loadHopRules();
+        } catch {
+          toast("保存失败");
+        }
+      }
+
+      async function loadHopRules() {
+        const tbody = $("#hopRulesBody");
+        if (!tbody) return;
+        tbody.innerHTML = "";
+        try {
+          const rows = await apiFetch("/api/hop-rules");
+          const items = Array.isArray(rows) ? rows : [];
+          $("#kpiHopRules").textContent = String(items.length);
+          items.forEach((r) => {
+            const tr = document.createElement("tr");
+            const en = r.enabled !== false;
+            tr.innerHTML = `
+              <td class="mono">${r.id}</td>
+              <td class="mono">${r.match_cidr}</td>
+              <td class="mono">${r.forged_src}</td>
+              <td class="mono">${r.priority}</td>
+              <td>${en ? "是" : "否"}</td>
+              <td class="row">
+                <button type="button" class="btn primary" data-act="edit">编辑</button>
+                <button type="button" class="btn" data-act="tog">${en ? "停用" : "启用"}</button>
+                <button type="button" class="btn" data-act="del">删除</button>
+              </td>`;
+            tr.querySelector('[data-act="edit"]').addEventListener("click", () => openHopEdit(r));
+            tr.querySelector('[data-act="tog"]').addEventListener("click", async () => {
+              try {
+                await apiFetch(`/api/hop-rules/${r.id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ enabled: !en }),
+                });
+                toast("已更新");
+                await loadHopRules();
+              } catch {
+                toast("失败");
+              }
+            });
+            tr.querySelector('[data-act="del"]').addEventListener("click", async () => {
+              if (!confirm(`删除规则 ${r.id}?`)) return;
+              try {
+                await apiFetch(`/api/hop-rules/${r.id}`, { method: "DELETE" });
+                toast("已删除");
+                await loadHopRules();
+              } catch {
+                toast("删除失败");
+              }
+            });
+            tbody.appendChild(tr);
+          });
+        } catch {
+          $("#kpiHopRules").textContent = "—";
+          tbody.innerHTML = '<tr><td colspan="6">加载失败</td></tr>';
+        }
+      }
+
+      async function addHopRule() {
+        const match_cidr = $("#hrCidr").value.trim();
+        const forged_src = $("#hrForge").value.trim();
+        if (!match_cidr || !forged_src) {
+          toast("请填写 CIDR 与 forged_src");
+          return;
+        }
+        const body = {
+          match_cidr,
+          forged_src,
+          priority: Number($("#hrPri").value || 0),
+          enabled: true,
+          note: $("#hrNote").value.trim(),
+        };
+        try {
+          await apiFetch("/api/hop-rules", { method: "POST", body: JSON.stringify(body) });
+          toast("已添加规则");
+          $("#hrCidr").value = "";
+          $("#hrForge").value = "";
+          await loadHopRules();
+        } catch {
+          toast("添加失败");
+        }
+      }
+
+      async function loadArpDlgIfaces(selected) {
+        const sel = $("#arpDlgIface");
+        if (!sel) return;
+        let ifaces = [];
+        try {
+          const j = await apiFetch("/api/host-ifaces");
+          ifaces = Array.isArray(j.ifaces) ? j.ifaces : [];
+        } catch {
+          ifaces = [];
+        }
+        sel.innerHTML = "";
+        const opt0 = document.createElement("option");
+        opt0.value = "";
+        opt0.textContent = ifaces.length ? "— 选择接口 —" : "（无法枚举接口）";
+        sel.appendChild(opt0);
+        ifaces.forEach((n) => {
+          const o = document.createElement("option");
+          o.value = n;
+          o.textContent = n;
+          sel.appendChild(o);
+        });
+        const want = (selected || "").trim();
+        if (want && ![...sel.options].some((o) => o.value === want)) {
+          const o = document.createElement("option");
+          o.value = want;
+          o.textContent = want + " (已保存)";
+          sel.appendChild(o);
+        }
+        if (want) sel.value = want;
+      }
+
+      async function loadArpSpoofSummary() {
+        try {
+          const s = await apiFetch("/api/arp-spoof/settings");
+          const on = !!s.arp_spoof_enabled;
+          const tag = $("#tagArpSpoof");
+          tag.className = `tag ${on ? "good" : "warn"}`;
+          tag.innerHTML = `<span class="dot"></span>${on ? "已开启" : "已关闭"}`;
+          $("#btnToggleArpSpoof").textContent = on ? "关闭" : "开启";
+          const targets = await apiFetch("/api/arp-spoof/targets").catch(() => []);
+          const arr = Array.isArray(targets) ? targets : [];
+          $("#kpiArpTargets").textContent = String(arr.length);
+        } catch {
+          $("#tagArpSpoof").className = "tag warn";
+          $("#tagArpSpoof").innerHTML = '<span class="dot"></span>未知';
+          $("#btnToggleArpSpoof").textContent = "重试";
+          $("#kpiArpTargets").textContent = "—";
+        }
+      }
+
+      async function toggleArpSpoof() {
+        const btn = $("#btnToggleArpSpoof");
+        btn.disabled = true;
+        try {
+          const cur = await apiFetch("/api/arp-spoof/settings").catch(() => ({ arp_spoof_enabled: false }));
+          const next = !cur.arp_spoof_enabled;
+          await apiFetch("/api/arp-spoof/settings", {
+            method: "PUT",
+            body: JSON.stringify({ arp_spoof_enabled: next }),
+          });
+          toast(`ARP 引流总开关已${next ? "开启" : "关闭"}`);
+          await loadArpSpoofSummary();
+        } catch {
+          toast("切换失败");
+          await loadArpSpoofSummary();
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      async function openArpEdit(row) {
+        $("#arpDlgId").value = row ? String(row.id) : "";
+        $("#arpDlgTitle").textContent = row ? "#" + row.id + " 编辑" : "新建";
+        $("#arpDlgIp").value = row ? row.spoof_gateway_ip || "" : "";
+        $("#arpDlgVrf").value = row ? row.satellite_vrf || "" : "";
+        $("#arpDlgMode").value = row && row.policy_mode === "victim_cidr" ? "victim_cidr" : "gateway_only";
+        $("#arpDlgCidrs").value = row ? row.policy_cidrs || "" : "";
+        $("#arpDlgNote").value = row ? row.note || "" : "";
+        $("#arpDlgEn").checked = row ? row.enabled !== false : true;
+        await loadArpDlgIfaces(row ? row.egress_iface || "" : "");
+        $("#dlgArpEdit").showModal();
+      }
+
+      $("#arpDlgIp")?.addEventListener("input", () => {
+        const vrf = $("#arpDlgVrf");
+        if (!vrf) return;
+        const isNew = !($("#arpDlgId").value || "").trim();
+        if (isNew || !(vrf.value || "").trim()) {
+          vrf.value = defaultVbgpForIp($("#arpDlgIp").value);
+        }
+      });
+
+      async function saveArpDlg() {
+        const id = ($("#arpDlgId").value || "").trim();
+        const spoof_gateway_ip = $("#arpDlgIp").value.trim();
+        let satellite_vrf = $("#arpDlgVrf").value.trim();
+        if (!satellite_vrf) satellite_vrf = defaultVbgpForIp(spoof_gateway_ip);
+        const egress_iface = $("#arpDlgIface").value.trim();
+        const policy_mode = $("#arpDlgMode").value === "victim_cidr" ? "victim_cidr" : "gateway_only";
+        const policy_cidrs = ($("#arpDlgCidrs").value || "").trim();
+        const note = ($("#arpDlgNote").value || "").trim();
+        const enabled = $("#arpDlgEn").checked;
+        if (!spoof_gateway_ip || !egress_iface) {
+          toast("请填写网关 IP 与接口");
+          return;
+        }
+        try {
+          const body = {
+            spoof_gateway_ip,
+            egress_iface,
+            enabled,
+            policy_mode,
+            policy_cidrs,
+            note,
+          };
+          if (satellite_vrf) {
+            body.satellite_vrf = satellite_vrf;
+          }
+          if (id) {
+            await apiFetch(`/api/arp-spoof/targets/${id}`, {
+              method: "PATCH",
+              body: JSON.stringify(body),
+            });
+            toast("已保存");
+          } else {
+            await apiFetch("/api/arp-spoof/targets", {
+              method: "POST",
+              body: JSON.stringify(body),
+            });
+            toast("已添加");
+          }
+          $("#dlgArpEdit").close();
+          await loadArpTargetsTable();
+          await loadArpSpoofSummary();
+        } catch (e) {
+          toast(`保存失败：${String(e.message || e).slice(0, 120)}`);
+        }
+      }
+
+      async function loadArpTargetsTable() {
+        const tbody = $("#arpTargetsBody");
+        if (!tbody) return;
+        tbody.innerHTML = "";
+        try {
+          const rows = await apiFetch("/api/arp-spoof/targets");
+          const items = Array.isArray(rows) ? rows : [];
+
+          items.forEach((r) => {
+            const tr = document.createElement("tr");
+            const en = r.enabled !== false;
+            const pm = r.policy_mode === "victim_cidr" ? "victim_cidr" : "gateway_only";
+            
+            const vrfName = r.satellite_vrf || "";
+            const vrfStatus = vrfName ? `<span class="tag good">已创建</span>` : `<span class="tag warn">未创建</span>`;
+
+            tr.innerHTML = `
+              <td class="mono">${r.id}</td>
+              <td class="mono">${r.spoof_gateway_ip}</td>
+              <td class="mono">${vrfName || "—"}</td>
+              <td class="mono">${r.egress_iface}</td>
+              <td class="mono">${pm}</td>
+              <td class="mono">${r.policy_cidrs || "—"}</td>
+              <td>${en ? "是" : "否"}</td>
+              <td>${vrfStatus}</td>
+              <td>${r.note || ""}</td>
+              <td class="row">
+                <button type="button" class="btn primary" data-act="edit">编辑</button>
+                ${vrfName ? '<button type="button" class="btn" data-act="bgp">带入BGP</button>' : ""}
+                <button type="button" class="btn" data-act="tog">${en ? "停用" : "启用"}</button>
+                <button type="button" class="btn" data-act="del">删除</button>
+              </td>`;
+            tr.querySelector('[data-act="edit"]').addEventListener("click", () => openArpEdit(r));
+            tr.querySelector('[data-act="bgp"]')?.addEventListener("click", () => prefillBgpFromArp(r));
+            tr.querySelector('[data-act="tog"]').addEventListener("click", async () => {
+              try {
+                await apiFetch(`/api/arp-spoof/targets/${r.id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ enabled: !en }),
+                });
+                toast("已更新");
+                await loadArpTargetsTable();
+                await loadArpSpoofSummary();
+              } catch {
+                toast("失败");
+              }
+            });
+            tr.querySelector('[data-act="del"]').addEventListener("click", async () => {
+              if (!confirm(`删除条目 ${r.id}（${r.spoof_gateway_ip}）? 关联的卫星VRF和BGP邻居也会被删除！`)) return;
+              try {
+                await apiFetch(`/api/arp-spoof/targets/${r.id}`, { method: "DELETE" });
+                toast("已删除");
+                await loadArpTargetsTable();
+                await loadArpSpoofSummary();
+                await refreshBGP();
+              } catch {
+                toast("删除失败");
+              }
+            });
+            tbody.appendChild(tr);
+          });
+          if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="10" class="small">暂无条目，点击「添加条目」或「+ 快速添加」</td></tr>';
+          }
+        } catch {
+          tbody.innerHTML = '<tr><td colspan="10">加载失败</td></tr>';
+        }
+      }
+
+      async function loadArpSpoofPage() {
+        await loadArpDlgIfaces("");
+        await loadArpTargetsTable();
+      }
+
+      async function reconcileSatelliteVrf() {
+        const btn = $("#btnArpReconcileSatellite");
+        if (!btn) return;
+        btn.disabled = true;
+        try {
+          const result = await apiFetch("/api/arp-spoof/satellite-vrfs/reconcile", { method: "POST" });
+          let msg = "";
+          if (result.skipped) {
+            msg = `跳过：${result.reason}`;
+          } else {
+            const created = (result.results || []).length;
+            const deleted = (result.deleted || []).length;
+            msg = `同步完成：创建 ${created} 个，删除 ${deleted} 个卫星VRF`;
+          }
+          toast(msg);
+        } catch (e) {
+          toast(`同步失败：${String(e).slice(0, 100)}`);
+        } finally {
+          btn.disabled = false;
+          await loadArpTargetsTable();
+          await refreshBGP();
+        }
+      }
+
+      async function loadVpnSummary() {
+        try {
+          const s = await apiFetch("/api/vpn/summary");
+          const elU = $("#kpiVpnUp");
+          const elD = $("#kpiVpnDown");
+          if (elU) elU.textContent = String(s.up ?? 0);
+          if (elD) elD.textContent = String(s.down ?? 0);
+        } catch {
+          const elU = $("#kpiVpnUp");
+          const elD = $("#kpiVpnDown");
+          if (elU) elU.textContent = "—";
+          if (elD) elD.textContent = "—";
+        }
+      }
+
+      function fmtBytes(n) {
+        const x = Number(n) || 0;
+        if (x < 1024) return `${x} B`;
+        if (x < 1048576) return `${(x / 1024).toFixed(1)} KB`;
+        return `${(x / 1048576).toFixed(2)} MB`;
+      }
+
+      function vpnStatusTag(st) {
+        const s = String(st || "unknown");
+        if (s === "up") return tag("good", "在线");
+        if (s === "disabled") return tag("warn", "未启用");
+        if (s === "down") return tag("bad", "断开");
+        return tag("warn", s);
+      }
+
+      async function loadVpnLinksTable() {
+        const tbody = $("#vpnLinksBody");
+        if (!tbody) return;
+        try {
+          const rows = await apiFetch("/api/vpn/links");
+          tbody.innerHTML = "";
+          rows.forEach((r) => {
+            const tr = document.createElement("tr");
+            const en = !!r.enabled;
+            const du = !!r.desired_up;
+            tr.innerHTML = `<td class="mono">${r.id}</td>
+              <td class="mono">${r.name}</td>
+              <td class="mono">${r.link_type}</td>
+              <td class="mono">${r.endpoint || "—"}</td>
+              <td class="mono">${r.iface_name || "—"}</td>
+              <td>${vpnStatusTag(r.actual_status)}</td>
+              <td class="mono">${r.priority}</td>
+              <td>${en ? "是" : "否"}</td>
+              <td>${du ? "是" : "否"}</td>
+              <td class="mono small">${fmtBytes(r.rx_bytes)} / ${fmtBytes(r.tx_bytes)}</td>
+              <td class="row" style="gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn" data-act="json">JSON</button>
+                <button type="button" class="btn" data-act="en">${en ? "禁用" : "启用"}</button>
+                <button type="button" class="btn" data-act="du">${du ? "停期望" : "期望 up"}</button>
+                <button type="button" class="btn" data-act="del">删除</button>
+              </td>`;
+            tr.querySelector('[data-act="json"]').addEventListener("click", () => {
+              alert(JSON.stringify(r, null, 2));
+            });
+            tr.querySelector('[data-act="en"]').addEventListener("click", async () => {
+              try {
+                await apiFetch(`/api/vpn/links/${r.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !en }) });
+                toast("已更新");
+                await loadVpnPage();
+                await loadVpnSummary();
+              } catch (e) {
+                toast(`失败 ${String(e).slice(0, 80)}`);
+              }
+            });
+            tr.querySelector('[data-act="du"]').addEventListener("click", async () => {
+              try {
+                await apiFetch(`/api/vpn/links/${r.id}`, { method: "PATCH", body: JSON.stringify({ desired_up: !du }) });
+                toast("已更新");
+                await loadVpnPage();
+                await loadVpnSummary();
+              } catch (e) {
+                toast(`失败 ${String(e).slice(0, 80)}`);
+              }
+            });
+            tr.querySelector('[data-act="del"]').addEventListener("click", async () => {
+              if (!confirm(`删除隧道 ${r.name}（id=${r.id}）?`)) return;
+              try {
+                await apiFetch(`/api/vpn/links/${r.id}`, { method: "DELETE" });
+                toast("已删除");
+                await loadVpnPage();
+                await loadVpnSummary();
+              } catch (e) {
+                toast(`删除失败 ${String(e).slice(0, 80)}`);
+              }
+            });
+            tbody.appendChild(tr);
+          });
+          if (!rows.length) tbody.innerHTML = '<tr><td colspan="11" class="small">暂无隧道</td></tr>';
+        } catch {
+          tbody.innerHTML = '<tr><td colspan="10">加载失败</td></tr>';
+        }
+      }
+
+      async function loadVpnPoliciesTable() {
+        const tbody = $("#vpnPolBody");
+        if (!tbody) return;
+        try {
+          const links = await apiFetch("/api/vpn/links").catch(() => []);
+          const nameOf = (id) => {
+            const x = links.find((l) => l.id === id);
+            return x ? x.name : String(id);
+          };
+          const rows = await apiFetch("/api/vpn/policies");
+          tbody.innerHTML = "";
+          rows.forEach((p) => {
+            const tr = document.createElement("tr");
+            const en = !!p.enabled;
+            tr.innerHTML = `<td class="mono">${p.id}</td>
+              <td class="mono">${p.dst_cidr}</td>
+              <td class="mono">${p.src_cidr || "—"}</td>
+              <td>${p.src_label || "—"}</td>
+              <td class="mono">${p.vpn_link_id} (${nameOf(p.vpn_link_id)})</td>
+              <td class="mono">${p.backup_link_id != null ? p.backup_link_id : "—"}</td>
+              <td class="mono">${p.fail_action}</td>
+              <td>${en ? "是" : "否"}</td>
+              <td class="row" style="gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn" data-act="json">JSON</button>
+                <button type="button" class="btn" data-act="tog">${en ? "停用" : "启用"}</button>
+                <button type="button" class="btn" data-act="del">删除</button>
+              </td>`;
+            tr.querySelector('[data-act="json"]').addEventListener("click", () => {
+              alert(JSON.stringify(p, null, 2));
+            });
+            tr.querySelector('[data-act="tog"]').addEventListener("click", async () => {
+              try {
+                await apiFetch(`/api/vpn/policies/${p.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !en }) });
+                toast("已更新");
+                await loadVpnPoliciesTable();
+              } catch (e) {
+                toast(`失败 ${String(e).slice(0, 80)}`);
+              }
+            });
+            tr.querySelector('[data-act="del"]').addEventListener("click", async () => {
+              if (!confirm(`删除策略 #${p.id} ${p.dst_cidr}?`)) return;
+              try {
+                await apiFetch(`/api/vpn/policies/${p.id}`, { method: "DELETE" });
+                toast("已删除");
+                await loadVpnPoliciesTable();
+              } catch (e) {
+                toast(`删除失败 ${String(e).slice(0, 80)}`);
+              }
+            });
+            tbody.appendChild(tr);
+          });
+          if (!rows.length) tbody.innerHTML = '<tr><td colspan="9" class="small">暂无策略</td></tr>';
+        } catch {
+          tbody.innerHTML = '<tr><td colspan="9">加载失败</td></tr>';
+        }
+      }
+
+      async function loadVpnPage() {
+        await loadVpnLinksTable();
+        await loadVpnPoliciesTable();
+      }
+
+      async function refreshAll() {
+        $("#apiBasePill").textContent = API_BASE ? `API: ${API_BASE}` : "API: 同源";
+        await loadHealth();
+        await loadGlobal();
+        await refreshBGP().catch(() => {});
+        await loadHopRules();
+        await loadArpSpoofSummary();
+        await loadVpnSummary();
+        const showing = $(".page.show")?.dataset?.page;
+        if (showing === "gateway") await loadArpTargetsTable();
+        if (showing === "vpn") await loadVpnPage();
+      }
+
+      $("#btnVpnApply")?.addEventListener("click", async () => {
+        const b = $("#btnVpnApply");
+        if (b) b.disabled = true;
+        try {
+          const j = await apiFetch("/api/vpn/apply", { method: "POST" });
+          toast(j?.skipped ? "已跳过下发（非 Linux 或 MTR_OP_VPN_APPLY=0）" : "下发完成");
+          await loadVpnPage();
+          await loadVpnSummary();
+        } catch (e) {
+          toast(`下发失败 ${String(e).slice(0, 100)}`);
+        } finally {
+          if (b) b.disabled = false;
+        }
+      });
+      $("#btnVpnPing")?.addEventListener("click", async () => {
+        const target = prompt("ping 目标（IP 或主机名）", "8.8.8.8");
+        if (target == null || !String(target).trim()) return;
+        const vrf = prompt("VRF", "vrf2103") || "vrf2103";
+        try {
+          const j = await apiFetch("/api/vpn/ping", {
+            method: "POST",
+            body: JSON.stringify({ target: String(target).trim(), vrf: String(vrf).trim(), count: 3 }),
+          });
+          toast(j?.ok ? "ping 成功" : `ping 失败 rc=${j?.returncode ?? "?"}`);
+          if (j?.stdout) console.log(j.stdout);
+        } catch (e) {
+          toast(`ping 请求失败 ${String(e).slice(0, 80)}`);
+        }
+      });
+      $("#btnVpnRefresh")?.addEventListener("click", async () => {
+        await loadVpnPage();
+        await loadVpnSummary();
+        toast("VPN 已刷新");
+      });
+      $("#btnVpnAddLink")?.addEventListener("click", async () => {
+        const name = ($("#vpnNewName")?.value || "").trim();
+        const link_type = ($("#vpnNewType")?.value || "gre").trim();
+        const endpoint = ($("#vpnNewEp")?.value || "").trim();
+        const vrf = ($("#vpnNewVrf")?.value || "vrf2103").trim();
+        const priority = Number($("#vpnNewPri")?.value || 100);
+        const rawCfg = ($("#vpnNewCfg")?.value || "").trim();
+        if (!name) {
+          toast("请填写名称");
+          return;
+        }
+        let config = {};
+        if (rawCfg) {
+          try {
+            config = JSON.parse(rawCfg);
+          } catch {
+            toast("config JSON 无效");
+            return;
+          }
+        }
+        try {
+          await apiFetch("/api/vpn/links", {
+            method: "POST",
+            body: JSON.stringify({
+              name,
+              link_type,
+              vrf,
+              endpoint,
+              iface_name: "",
+              enabled: true,
+              desired_up: true,
+              priority,
+              config,
+            }),
+          });
+          toast("已新增隧道");
+          if ($("#vpnNewName")) $("#vpnNewName").value = "";
+          if ($("#vpnNewEp")) $("#vpnNewEp").value = "";
+          if ($("#vpnNewCfg")) $("#vpnNewCfg").value = "";
+          await loadVpnPage();
+          await loadVpnSummary();
+        } catch (e) {
+          toast(`新增失败 ${String(e).slice(0, 120)}`);
+        }
+      });
+      $("#btnVpnAddPol")?.addEventListener("click", async () => {
+        const dst_cidr = ($("#polNewDst")?.value || "").trim();
+        const src_cidr = ($("#polNewSrc")?.value || "").trim();
+        const src_label = ($("#polNewLbl")?.value || "").trim();
+        const lid = Number($("#polNewLid")?.value || 0);
+        const bidRaw = ($("#polNewBid")?.value || "").trim();
+        const fail_action = ($("#polNewFail")?.value || "fallback").trim();
+        if (!dst_cidr || !lid) {
+          toast("请填写目的 CIDR 与出口隧道 ID");
+          return;
+        }
+        const body = {
+          dst_cidr,
+          src_cidr,
+          src_label,
+          vpn_link_id: lid,
+          backup_link_id: bidRaw ? Number(bidRaw) : null,
+          fail_action,
+          enabled: true,
+        };
+        try {
+          await apiFetch("/api/vpn/policies", { method: "POST", body: JSON.stringify(body) });
+          toast("已新增策略");
+          if ($("#polNewDst")) $("#polNewDst").value = "";
+          if ($("#polNewSrc")) $("#polNewSrc").value = "";
+          if ($("#polNewLid")) $("#polNewLid").value = "";
+          if ($("#polNewBid")) $("#polNewBid").value = "";
+          await loadVpnPoliciesTable();
+        } catch (e) {
+          toast(`新增失败 ${String(e).slice(0, 120)}`);
+        }
+      });
+
+      $("#edCancel")?.addEventListener("click", () => $("#dlgHopEdit").close());
+      $("#edSave")?.addEventListener("click", () => saveHopEdit());
+
+      $("#btnArpReconcileSatellite")?.addEventListener("click", reconcileSatelliteVrf);
+
+      $("#btnArpAddQuick")?.addEventListener("click", async () => {
+        await loadArpDlgIfaces("");
+        const sel = $("#arpQuickIface");
+        if (sel && sel.options.length > 1) {
+          sel.value = sel.options[1].value;
+        }
+        $("#arpQuickIp").value = "";
+        $("#arpQuickVrf").value = "";
+        $("#arpQuickNote").value = "";
+        $("#dlgArpQuickAdd").showModal();
+      });
+
+      $("#arpQuickIp")?.addEventListener("input", () => {
+        const vrf = $("#arpQuickVrf");
+        if (!vrf) return;
+        vrf.value = defaultVbgpForIp($("#arpQuickIp").value);
+      });
+
+      $("#arpQuickCancel")?.addEventListener("click", () => {
+        $("#dlgArpQuickAdd").close();
+      });
+
+      $("#arpQuickSave")?.addEventListener("click", async () => {
+        const ip = $("#arpQuickIp").value.trim();
+        let vrf = $("#arpQuickVrf").value.trim();
+        if (!vrf) vrf = defaultVbgpForIp(ip);
+        const iface = $("#arpQuickIface").value.trim();
+        const note = $("#arpQuickNote").value.trim();
+        
+        if (!ip) {
+          toast("请填写冒充网关IP");
+          return;
+        }
+        if (!vrf) {
+          toast("请填写VRF名称");
+          return;
+        }
+        if (!iface) {
+          toast("请选择接口");
+          return;
+        }
+
+        const btn = $("#arpQuickSave");
+        btn.disabled = true;
+        
+        try {
+          await apiFetch("/api/arp-spoof/targets", {
+            method: "POST",
+            body: JSON.stringify({
+              spoof_gateway_ip: ip,
+              satellite_vrf: vrf,
+              egress_iface: iface,
+              enabled: true,
+              policy_mode: "gateway_only",
+              note: note || "快速添加"
+            }),
+          });
+          
+          toast("ARP引流条目已添加");
+          $("#dlgArpQuickAdd").close();
+          
+          await loadArpTargetsTable();
+          await loadArpSpoofSummary();
+          
+          await apiFetch("/api/arp-spoof/satellite-vrfs/reconcile", { method: "POST" });
+          try {
+            await addBgpNeighborForArp(ip, vrf);
+            toast("已同步VRF并下发BGP邻居，请等待建立");
+          } catch (e) {
+            const body = e?.body?.detail;
+            const msg = typeof body === "string" ? body : JSON.stringify(body || String(e));
+            if (e?.status === 409 || msg.includes("neighbor_already_exists")) {
+              toast("VRF已同步，BGP邻居已存在");
+            } else {
+              toast(`VRF已同步，BGP下发失败：${msg.slice(0, 160)}`);
+            }
+          }
+          
+          setTimeout(async () => {
+            await loadArpTargetsTable();
+            await refreshBGP();
+          }, 5000);
+          
+        } catch (e) {
+          toast(`添加失败：${String(e).slice(0, 100)}`);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      $("#btnArpRefresh")?.addEventListener("click", async () => {
+        await loadArpTargetsTable();
+        await loadArpSpoofSummary();
+        toast("已刷新");
+      });
+
+      refreshAll();
+    </script>
+  </body>
+</html>

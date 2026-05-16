@@ -1,0 +1,14 @@
+# Linux 200：TE SNAT 使用 **table ip**（IPv4），便于 VRF 转发路径与 nat hook 一致。
+# 滤镜占位仍为 inet mtr_spoof。
+
+table inet mtr_spoof {
+  chain prerouting {
+    type filter hook prerouting priority -300; policy accept;
+  }
+}
+
+table ip mtr_te_snat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+  }
+}

@@ -1,0 +1,2211 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vRouter 管理后台（HTML 原型）</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: rgba(255, 255, 255, 0.06);
+        --panel2: rgba(255, 255, 255, 0.08);
+        --border: rgba(255, 255, 255, 0.12);
+        --text: rgba(255, 255, 255, 0.92);
+        --muted: rgba(255, 255, 255, 0.64);
+        --muted2: rgba(255, 255, 255, 0.48);
+        --primary: #7c5cff;
+        --good: #29d17d;
+        --warn: #ffb020;
+        --bad: #ff4d4f;
+        --shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+        --r: 14px;
+        --r2: 12px;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+          monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC",
+          "Microsoft YaHei", "Helvetica Neue", Arial;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        font-family: var(--sans);
+        color: var(--text);
+        background: radial-gradient(1200px 600px at 15% -10%, rgba(124, 92, 255, 0.45), transparent 55%),
+          radial-gradient(900px 500px at 90% 0%, rgba(41, 209, 125, 0.18), transparent 60%),
+          radial-gradient(900px 500px at 80% 110%, rgba(255, 176, 32, 0.12), transparent 60%),
+          var(--bg);
+        overflow: hidden;
+      }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .app {
+        height: 100%;
+        display: grid;
+        grid-template-columns: 270px 1fr;
+      }
+      .sidebar {
+        padding: 16px;
+        border-right: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 10px 12px;
+      }
+      .logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        background: conic-gradient(from 180deg, var(--primary), rgba(41, 209, 125, 0.9), rgba(255, 176, 32, 0.9));
+        box-shadow: 0 10px 25px rgba(124, 92, 255, 0.25);
+      }
+      .brand .t {
+        min-width: 0;
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 15px;
+        letter-spacing: 0.2px;
+      }
+      .brand .sub {
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .nav {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .group-title {
+        font-size: 11px;
+        letter-spacing: 0.6px;
+        color: var(--muted2);
+        padding: 12px 10px 4px;
+        text-transform: uppercase;
+      }
+      .nav a {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid transparent;
+        background: transparent;
+        cursor: pointer;
+        user-select: none;
+      }
+      .nav a:hover {
+        background: rgba(255, 255, 255, 0.06);
+        border-color: rgba(255, 255, 255, 0.07);
+      }
+      .nav a.active {
+        background: rgba(124, 92, 255, 0.18);
+        border-color: rgba(124, 92, 255, 0.32);
+        box-shadow: 0 16px 40px rgba(124, 92, 255, 0.12);
+      }
+      .nav .left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .icon {
+        width: 18px;
+        height: 18px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.10);
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.8);
+        flex: none;
+      }
+      .label {
+        font-size: 13px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .badge {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.86);
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        padding: 2px 8px;
+        border-radius: 999px;
+        flex: none;
+      }
+      .footer-tip {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px dashed rgba(255, 255, 255, 0.18);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .main {
+        height: 100%;
+        display: grid;
+        grid-template-rows: 60px 1fr;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.12);
+        backdrop-filter: blur(10px);
+      }
+      .crumb {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        min-width: 0;
+      }
+      .crumb .title {
+        font-weight: 720;
+        font-size: 15px;
+      }
+      .crumb .desc {
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .pill {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.86);
+      }
+      .btn {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.9);
+        padding: 8px 10px;
+        border-radius: 12px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .btn.primary {
+        border-color: rgba(124, 92, 255, 0.55);
+        background: rgba(124, 92, 255, 0.20);
+      }
+      .btn.danger {
+        border-color: rgba(255, 77, 79, 0.55);
+        background: rgba(255, 77, 79, 0.16);
+      }
+      .btn:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .content {
+        padding: 18px;
+        overflow: auto;
+      }
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+      .grid.cols-2 {
+        grid-template-columns: 1.1fr 0.9fr;
+      }
+      .grid.cols-3 {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .card {
+        border-radius: var(--r);
+        border: 1px solid var(--border);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .card .hd {
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .card .hd .h {
+        font-size: 13px;
+        font-weight: 720;
+      }
+      .card .bd {
+        padding: 14px;
+      }
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .kpi {
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        padding: 12px 12px 10px;
+      }
+      .kpi .k {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .kpi .v {
+        margin-top: 8px;
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 0.2px;
+      }
+      .kpi .s {
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--muted2);
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .field {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .field label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      input,
+      select {
+        background: transparent;
+        border: none;
+        outline: none;
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 12px;
+        min-width: 140px;
+      }
+      select option {
+        color: #111;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border-radius: 12px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 10px 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 12px;
+        vertical-align: top;
+      }
+      th {
+        font-size: 11px;
+        color: var(--muted);
+        letter-spacing: 0.3px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      tr:hover td {
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .mono {
+        font-family: var(--mono);
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        border-radius: 999px;
+        padding: 2px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.86);
+        white-space: nowrap;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.4);
+      }
+      .tag.good .dot {
+        background: var(--good);
+      }
+      .tag.warn .dot {
+        background: var(--warn);
+      }
+      .tag.bad .dot {
+        background: var(--bad);
+      }
+      .bgp-sw {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .bgp-sw input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+      }
+      .bgp-sw .track {
+        width: 38px;
+        height: 20px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        position: relative;
+        flex: none;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .bgp-sw .knob {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.82);
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .bgp-sw input:focus-visible + .track {
+        outline: 2px solid rgba(124, 92, 255, 0.55);
+        outline-offset: 2px;
+      }
+      .bgp-sw input:checked + .track {
+        background: rgba(41, 209, 125, 0.22);
+        border-color: rgba(41, 209, 125, 0.42);
+      }
+      .bgp-sw input:checked + .track .knob {
+        transform: translateX(18px);
+        background: var(--good);
+      }
+      .bgp-sw .cap {
+        font-size: 11px;
+        color: var(--muted);
+        min-width: 2em;
+      }
+      .small {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .list {
+        display: grid;
+        gap: 10px;
+      }
+      .item {
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        padding: 10px 12px;
+      }
+      .item .t {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .item .title {
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .item .meta {
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+      }
+      .modal {
+        width: min(840px, 100%);
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(16, 20, 34, 0.92);
+        box-shadow: 0 35px 90px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+      }
+      .modal .hd {
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .modal .hd .h {
+        font-size: 13px;
+        font-weight: 720;
+      }
+      .modal .bd {
+        padding: 14px;
+        max-height: min(70vh, 560px);
+        overflow: auto;
+      }
+      .modal-backdrop.show {
+        display: flex;
+      }
+      .toast {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        width: min(360px, calc(100% - 36px));
+        display: grid;
+        gap: 10px;
+        pointer-events: none;
+      }
+      .toast .t {
+        pointer-events: auto;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      .toast .msg {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.88);
+        line-height: 1.35;
+      }
+      .toast .x {
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.7);
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+      @media (max-width: 920px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          display: none;
+        }
+        .kpis {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .grid.cols-2 {
+          grid-template-columns: 1fr;
+        }
+        .split {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo"></div>
+          <div class="t">
+            <h1>vRouter 管理后台</h1>
+            <div class="sub">HTML 原型 · 数据模拟 · 可直接打开</div>
+          </div>
+        </div>
+
+        <nav class="nav" id="nav">
+          <div class="group-title">Overview</div>
+          <a data-page="overview" class="active">
+            <div class="left">
+              <div class="icon">⌂</div>
+              <div class="label">首页概览</div>
+            </div>
+            <div class="badge" id="badgeAlerts">3</div>
+          </a>
+
+          <div class="group-title">Routing</div>
+          <a data-page="bgp">
+            <div class="left">
+              <div class="icon">B</div>
+              <div class="label">BGP 管理</div>
+            </div>
+            <div class="badge" id="badgeBGP">2</div>
+          </a>
+          <a data-page="routes">
+            <div class="left">
+              <div class="icon">R</div>
+              <div class="label">路由表查询</div>
+            </div>
+            <div class="badge">API</div>
+          </a>
+          <a data-page="cache">
+            <div class="left">
+              <div class="icon">C</div>
+              <div class="label">缓存路由</div>
+            </div>
+            <div class="badge">冷备</div>
+          </a>
+
+          <div class="group-title">Traffic & Rules</div>
+          <a data-page="mtr">
+            <div class="left">
+              <div class="icon">M</div>
+              <div class="label">MTR/ICMP 劫持策略</div>
+            </div>
+            <div class="badge">ON</div>
+          </a>
+          <a data-page="ipdb">
+            <div class="left">
+              <div class="icon">IP</div>
+              <div class="label">IP 运营商规则库</div>
+            </div>
+            <div class="badge">Redis</div>
+          </a>
+
+          <div class="group-title">Gateway Reply</div>
+          <a data-page="gatewayPool">
+            <div class="left">
+              <div class="icon">G</div>
+              <div class="label">网关地址池</div>
+            </div>
+            <div class="badge" id="badgeGateway">—</div>
+          </a>
+          <a data-page="gatewaySettings">
+            <div class="left">
+              <div class="icon">↩</div>
+              <div class="label">网关代答设置</div>
+            </div>
+            <div class="badge" id="badgeGatewayMode">A</div>
+          </a>
+
+          <div class="group-title">VPN Egress</div>
+          <a data-page="vpn">
+            <div class="left">
+              <div class="icon">V</div>
+              <div class="label">VPN 出口管理</div>
+            </div>
+            <div class="badge" id="badgeVPN">3</div>
+          </a>
+
+          <div class="group-title">Observability</div>
+          <a data-page="audit">
+            <div class="left">
+              <div class="icon">⎘</div>
+              <div class="label">日志审计</div>
+            </div>
+            <div class="badge">Log</div>
+          </a>
+          <a data-page="settings">
+            <div class="left">
+              <div class="icon">⚙</div>
+              <div class="label">系统设置</div>
+            </div>
+            <div class="badge">RBAC</div>
+          </a>
+        </nav>
+
+        <div class="footer-tip">
+          提示：这是纯静态原型，不依赖后端。<br />
+          你可以在页面右上角切换“BGP 断开/恢复”来查看缓存路由的回退效果。
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="crumb">
+            <div class="title" id="pageTitle">首页概览</div>
+            <div class="desc" id="pageDesc">系统运行状态、告警、关键指标</div>
+          </div>
+          <div class="actions">
+            <div class="pill" id="pillClock">--:--:--</div>
+            <button class="btn" id="btnToggleBGP" title="模拟上游 BGP 邻居断开/恢复">模拟 BGP：断开</button>
+            <button class="btn primary" id="btnRefresh">刷新数据</button>
+          </div>
+        </header>
+
+        <section class="content">
+          <!-- Overview -->
+          <div class="page" data-page="overview">
+            <div class="grid">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">系统状态</div>
+                  <div class="small" id="overviewNow">—</div>
+                </div>
+                <div class="bd">
+                  <div class="kpis">
+                    <div class="kpi">
+                      <div class="k">vRouter</div>
+                      <div class="v" id="kpiVrouter">运行中</div>
+                      <div class="s">Docker · Python</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">FRR / BGP</div>
+                      <div class="v" id="kpiFRR">正常</div>
+                      <div class="s" id="kpiFRRSub">2 邻居 Established</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">Redis</div>
+                      <div class="v">正常</div>
+                      <div class="s">规则库/缓存</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">MySQL</div>
+                      <div class="v">正常</div>
+                      <div class="s">日志/配置</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid cols-2">
+                <div class="card">
+                  <div class="hd">
+                    <div class="h">关键指标</div>
+                    <div class="row">
+                      <span class="tag good"><span class="dot"></span>健康</span>
+                      <span class="tag"><span class="dot"></span>最近 15 分钟</span>
+                    </div>
+                  </div>
+                  <div class="bd">
+                    <div class="kpis" style="grid-template-columns: repeat(4, 1fr)">
+                      <div class="kpi">
+                        <div class="k">CPU</div>
+                        <div class="v" id="kpiCPU">18%</div>
+                        <div class="s">平均负载 0.62</div>
+                      </div>
+                      <div class="kpi">
+                        <div class="k">内存</div>
+                        <div class="v" id="kpiMem">42%</div>
+                        <div class="s">7.1GB / 16GB</div>
+                      </div>
+                      <div class="kpi">
+                        <div class="k">丢包（MTR）</div>
+                        <div class="v" id="kpiLoss">0.1%</div>
+                        <div class="s">命中策略 31 次</div>
+                      </div>
+                      <div class="kpi">
+                        <div class="k">VPN 出口</div>
+                        <div class="v" id="kpiVPN">2 在线</div>
+                        <div class="s" id="kpiVPNSub">1 异常</div>
+                      </div>
+                    </div>
+                    <div class="row" style="margin-top: 12px; justify-content: space-between">
+                      <div class="row">
+                        <span class="tag" id="tagGatewayReply"><span class="dot"></span>网关代答：—</span>
+                        <span class="tag" id="tagGatewayScope"><span class="dot"></span>范围：—</span>
+                      </div>
+                      <div class="small" id="kpiGatewayHits">—</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <div class="hd">
+                    <div class="h">最近告警</div>
+                    <button class="btn" id="btnClearAlerts">清空</button>
+                  </div>
+                  <div class="bd">
+                    <div class="list" id="alertList"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- BGP -->
+          <div class="page" data-page="bgp" style="display: none">
+            <div class="card">
+              <div class="hd">
+                <div class="h">BGP 邻居</div>
+                <div class="row">
+                  <button class="btn" id="btnAddNeighbor">新增邻居</button>
+                  <button class="btn" id="btnExportBGP">导出</button>
+                </div>
+              </div>
+              <div class="bd">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>邻居IP</th>
+                      <th>Remote AS</th>
+                      <th>角色</th>
+                      <th>状态</th>
+                      <th>学习路由</th>
+                      <th>最后更新时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="bgpTable"></tbody>
+                </table>
+                <div class="small" style="margin-top: 10px">
+                  说明：状态数据模拟。行内开关表示邻居管理性启停（原型，对应 FRR
+                  <span class="mono">neighbor … shutdown</span>）。首页「模拟 BGP」仍可模拟上游链路中断以观察缓存回退。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Routes query -->
+          <div class="page" data-page="routes" style="display: none">
+            <div class="card">
+              <div class="hd">
+                <div class="h">路由表查询</div>
+                <div class="row">
+                  <div class="field">
+                    <label>前缀</label>
+                    <input id="routePrefix" placeholder="例如 8.8.8.0/24 或 0.0.0.0/0" />
+                  </div>
+                  <div class="field">
+                    <label>来源</label>
+                    <select id="routeSource">
+                      <option value="auto">自动（优先实时）</option>
+                      <option value="live">实时 BGP</option>
+                      <option value="cached">缓存 BGP</option>
+                    </select>
+                  </div>
+                  <button class="btn primary" id="btnRouteSearch">查询</button>
+                  <button class="btn" id="btnRouteExport">导出</button>
+                </div>
+              </div>
+              <div class="bd">
+                <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+                  <div class="row">
+                    <span class="tag" id="tagRouteMode"><span class="dot"></span>source: auto</span>
+                    <span class="tag" id="tagBGPStatus"><span class="dot"></span>BGP: up</span>
+                    <span class="tag" id="tagCacheTime"><span class="dot"></span>cache_time: -</span>
+                  </div>
+                  <div class="small" id="routeCount">—</div>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>路由前缀</th>
+                      <th>下一跳</th>
+                      <th>来源邻居</th>
+                      <th>AS_PATH</th>
+                      <th>LOCAL_PREF</th>
+                      <th>MED</th>
+                      <th>状态</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="routeTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cache routes -->
+          <div class="page" data-page="cache" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">缓存路由（最新快照）</div>
+                  <div class="row">
+                    <button class="btn" id="btnRebuildCache">立即缓存</button>
+                    <button class="btn" id="btnPurgeCache">清理</button>
+                  </div>
+                </div>
+                <div class="bd">
+                  <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+                    <div class="row">
+                      <span class="tag"><span class="dot"></span>存储：Redis（热）+ MySQL（冷）</span>
+                      <span class="tag" id="tagCacheVersion"><span class="dot"></span>version: -</span>
+                    </div>
+                    <div class="small" id="cacheMeta">—</div>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>前缀</th>
+                        <th>下一跳</th>
+                        <th>来源邻居</th>
+                        <th>AS_PATH</th>
+                        <th>cached_at</th>
+                      </tr>
+                    </thead>
+                    <tbody id="cacheTable"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card">
+                <div class="hd">
+                  <div class="h">缓存策略说明</div>
+                  <span class="tag warn"><span class="dot"></span>查询回退</span>
+                </div>
+                <div class="bd">
+                  <div class="item">
+                    <div class="t">
+                      <div class="title">触发</div>
+                      <span class="tag"><span class="dot"></span>BGP Down</span>
+                    </div>
+                    <div class="meta">
+                      当与上游设备 BGP 断开时，客户请求“路由表查询”，返回最近一次缓存的路由快照，并标记
+                      <span class="mono">source=cached_bgp</span>。
+                    </div>
+                  </div>
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">字段</div>
+                      <span class="tag"><span class="dot"></span>prefix / next_hop / as_path</span>
+                    </div>
+                    <div class="meta">缓存记录带时间戳、来源邻居、路由属性（LOCAL_PREF/MED 等）。</div>
+                  </div>
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">注意</div>
+                      <span class="tag bad"><span class="dot"></span>防止误导</span>
+                    </div>
+                    <div class="meta">缓存用于“查询回退”，不等价于继续按缓存路由转发（若要转发需单独需求）。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- MTR -->
+          <div class="page" data-page="mtr" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">MTR/ICMP 劫持策略</div>
+                  <div class="row">
+                    <span class="tag good" id="tagHijack"><span class="dot"></span>已开启</span>
+                    <button class="btn" id="btnToggleHijack">切换</button>
+                    <button class="btn" id="btnAddMtr">新增策略</button>
+                  </div>
+                </div>
+                <div class="bd">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>匹配运营商</th>
+                        <th>目标IP段</th>
+                        <th>伪造返回IP</th>
+                        <th>TTL策略</th>
+                        <th>延迟模拟</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="mtrTable"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card">
+                <div class="hd">
+                  <div class="h">命中统计（模拟）</div>
+                  <span class="tag"><span class="dot"></span>最近 1 小时</span>
+                </div>
+                <div class="bd">
+                  <div class="list" id="mtrStats"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- IP DB -->
+          <div class="page" data-page="ipdb" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">IP 运营商规则库</div>
+                  <div class="row">
+                    <button class="btn" id="btnImportIP">导入</button>
+                    <button class="btn" id="btnExportIP">导出</button>
+                  </div>
+                </div>
+                <div class="bd">
+                  <div class="row" style="margin-bottom: 10px">
+                    <div class="field">
+                      <label>IP 查询</label>
+                      <input id="ipLookup" placeholder="例如 8.8.8.8" />
+                    </div>
+                    <button class="btn primary" id="btnIpLookup">查询</button>
+                    <span class="small" id="ipLookupResult">—</span>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>IP 段</th>
+                        <th>运营商</th>
+                        <th>来源</th>
+                        <th>版本</th>
+                        <th>更新时间</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="ipTable"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card">
+                <div class="hd">
+                  <div class="h">规则库状态</div>
+                  <span class="tag"><span class="dot"></span>存储：Redis</span>
+                </div>
+                <div class="bd">
+                  <div class="item">
+                    <div class="t">
+                      <div class="title">数据来源</div>
+                      <span class="tag"><span class="dot"></span>用户提供 IP 库</span>
+                    </div>
+                    <div class="meta">
+                      规则库用于“运营商匹配”，为 MTR 劫持策略提供输入（例如按运营商返回不同的伪造应答）。
+                    </div>
+                  </div>
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">匹配方式</div>
+                      <span class="tag"><span class="dot"></span>IP 段 / 前缀</span>
+                    </div>
+                    <div class="meta">模拟实现：按最长前缀匹配（示例数据）。</div>
+                  </div>
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">建议</div>
+                      <span class="tag warn"><span class="dot"></span>版本化</span>
+                    </div>
+                    <div class="meta">生产实现建议：每次导入生成版本号，可回滚，记录导入审计。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Gateway Pool -->
+          <div class="page" data-page="gatewayPool" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">网关地址池（方案 A：仅代答，不配置本地 IP）</div>
+                  <div class="row">
+                    <button class="btn" id="btnAddGatewayIp">新增 IP</button>
+                    <button class="btn" id="btnImportGatewayIp">导入</button>
+                    <button class="btn" id="btnExportGatewayIp">导出</button>
+                  </div>
+                </div>
+                <div class="bd">
+                  <div class="row" style="margin-bottom: 10px">
+                    <div class="field">
+                      <label>搜索</label>
+                      <input id="gatewaySearch" placeholder="例如 100.64.1.1" />
+                    </div>
+                    <div class="field">
+                      <label>状态</label>
+                      <select id="gatewayStatus">
+                        <option value="all">全部</option>
+                        <option value="enabled">启用</option>
+                        <option value="disabled">停用</option>
+                      </select>
+                    </div>
+                    <button class="btn primary" id="btnGatewayFilter">筛选</button>
+                    <span class="small" id="gatewayCount">—</span>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>网关 IP</th>
+                        <th>分组</th>
+                        <th>状态</th>
+                        <th>生效入口</th>
+                        <th>最近命中</th>
+                        <th>命中次数</th>
+                        <th>备注</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="gatewayTable"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card">
+                <div class="hd">
+                  <div class="h">隔离说明（与上游 IP 可能重合）</div>
+                  <span class="tag warn"><span class="dot"></span>必须限定范围</span>
+                </div>
+                <div class="bd">
+                  <div class="item">
+                    <div class="t">
+                      <div class="title">为什么会冲突</div>
+                      <span class="tag bad"><span class="dot"></span>误代答风险</span>
+                    </div>
+                    <div class="meta">
+                      网关池中的 IP 可能与上层运营商 IP 重合。方案 A 不配置本地 IP，靠“截获+伪造应答”代答。
+                      如果不限制入口范围，可能对非预期流量发生代答。
+                    </div>
+                  </div>
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">如何隔离</div>
+                      <span class="tag good"><span class="dot"></span>入口白名单</span>
+                    </div>
+                    <div class="meta">
+                      建议在“网关代答设置”中配置 <span class="mono">入接口/源网段白名单</span>，仅对客户侧入口生效，避免影响上游侧。
+                    </div>
+                  </div>
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">代答行为</div>
+                      <span class="tag"><span class="dot"></span>源 IP = dst_ip</span>
+                    </div>
+                    <div class="meta">
+                      当客户端 traceroute 某网关 IP（dst）时，vRouter 丢弃原包并构造 ICMP 回复，回复包源 IP 伪装为该网关 IP（dst）。
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Gateway Settings -->
+          <div class="page" data-page="gatewaySettings" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">网关代答设置（方案 A）</div>
+                  <div class="row">
+                    <span class="tag" id="tagGatewayEnabled"><span class="dot"></span>—</span>
+                    <button class="btn" id="btnToggleGatewayReply">切换开关</button>
+                    <button class="btn primary" id="btnSaveGatewaySettings">保存</button>
+                  </div>
+                </div>
+                <div class="bd">
+                  <div class="item">
+                    <div class="t">
+                      <div class="title">代答模式</div>
+                      <span class="tag"><span class="dot"></span>精确 dst_ip</span>
+                    </div>
+                    <div class="meta">
+                      命中条件：<span class="mono">dst_ip ∈ 网关池</span>。命中后丢弃原包，伪造 ICMP 回复。回复包源 IP = 请求的网关 IP（dst）。
+                    </div>
+                  </div>
+
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">生效范围（强烈建议配置）</div>
+                      <span class="tag warn"><span class="dot"></span>隔离关键</span>
+                    </div>
+                    <div class="meta">
+                      <div class="row" style="margin-top: 10px">
+                        <div class="field" style="flex: 1">
+                          <label>入接口白名单</label>
+                          <input id="gwIngressIfaces" placeholder="例如 ae100.153, ae100.154" />
+                        </div>
+                        <div class="field" style="flex: 1">
+                          <label>源网段白名单</label>
+                          <input id="gwSourceCidrs" placeholder="例如 10.0.0.0/8, 192.168.0.0/16" />
+                        </div>
+                      </div>
+                      <div class="small" style="margin-top: 8px" id="gwScopeHint">—</div>
+                    </div>
+                  </div>
+
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">协议支持</div>
+                      <span class="tag"><span class="dot"></span>traceroute</span>
+                    </div>
+                    <div class="meta">
+                      <div class="row" style="margin-top: 10px">
+                        <label class="field" style="gap: 10px">
+                          <input type="checkbox" id="gwUdpTrace" />
+                          <span class="small">UDP traceroute：回 ICMP Port Unreachable</span>
+                        </label>
+                        <label class="field" style="gap: 10px">
+                          <input type="checkbox" id="gwIcmpTrace" />
+                          <span class="small">ICMP traceroute：回 Echo Reply</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="item" style="margin-top: 10px">
+                    <div class="t">
+                      <div class="title">未命中行为</div>
+                      <span class="tag"><span class="dot"></span>默认放行</span>
+                    </div>
+                    <div class="meta">
+                      <div class="row" style="margin-top: 10px">
+                        <div class="field">
+                          <label>未命中</label>
+                          <select id="gwMissAction">
+                            <option value="pass">放行（推荐）</option>
+                            <option value="drop">丢弃（谨慎）</option>
+                          </select>
+                        </div>
+                        <div class="small">避免对非目标流量产生影响；若需要“强制隐藏真实网关”，再考虑丢弃。</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="item" style="margin-top: 10px" id="gwRiskBox">
+                    <div class="t">
+                      <div class="title">风险提示</div>
+                      <span class="tag bad"><span class="dot"></span>需要限定范围</span>
+                    </div>
+                    <div class="meta">
+                      当前已开启代答，但未设置“入接口/源网段白名单”。由于网关池 IP 可能与上游 IP 重合，建议立即配置生效范围，避免误代答。
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="hd">
+                  <div class="h">命中预览（模拟）</div>
+                  <span class="tag"><span class="dot"></span>最近 10 分钟</span>
+                </div>
+                <div class="bd">
+                  <div class="list" id="gwHitPreview"></div>
+                  <div class="small" style="margin-top: 10px">
+                    说明：命中日志也会同步出现在“日志审计”中（类型 <span class="mono">GATEWAY_REPLY</span>）。
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VPN -->
+          <div class="page" data-page="vpn" style="display: none">
+            <div class="card">
+              <div class="hd">
+                <div class="h">VPN 出口管理（OpenVPN / GRE / L2TP）</div>
+                <div class="row">
+                  <button class="btn" id="btnAddVPN">新增 VPN</button>
+                  <button class="btn" id="btnTestVPN">连通性测试</button>
+                </div>
+              </div>
+              <div class="bd">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>类型</th>
+                      <th>外部服务地址</th>
+                      <th>状态</th>
+                      <th>优先级</th>
+                      <th>延迟</th>
+                      <th>流量</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vpnTable"></tbody>
+                </table>
+
+                <div style="height: 12px"></div>
+                <div class="card" style="box-shadow: none; background: rgba(255, 255, 255, 0.03)">
+                  <div class="hd" style="border-bottom-color: rgba(255, 255, 255, 0.08)">
+                    <div class="h">VPN 路由策略（模拟）</div>
+                    <div class="row">
+                      <button class="btn" id="btnAddVpnPolicy">新增策略</button>
+                      <span class="tag"><span class="dot"></span>策略路由 / ip rule</span>
+                    </div>
+                  </div>
+                  <div class="bd">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>目的网段</th>
+                          <th>来源客户</th>
+                          <th>出口 VPN</th>
+                          <th>失败策略</th>
+                          <th>状态</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody id="vpnPolicyTable"></tbody>
+                    </table>
+                    <div class="small" style="margin-top: 10px">
+                      说明：这里的 VPN 是“本路由器连接外部 VPN 服务，用于访问外部服务”，不是用户拨入。
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Audit -->
+          <div class="page" data-page="audit" style="display: none">
+            <div class="card">
+              <div class="hd">
+                <div class="h">日志审计</div>
+                <div class="row">
+                  <div class="field">
+                    <label>类型</label>
+                    <select id="logType">
+                      <option value="all">全部</option>
+                      <option value="BGP">BGP状态</option>
+                      <option value="ROUTE">路由缓存</option>
+                      <option value="MTR">MTR劫持</option>
+                      <option value="VPN">VPN状态</option>
+                      <option value="GATEWAY_REPLY">网关代答</option>
+                      <option value="AUTH">登录/权限</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>关键字</label>
+                    <input id="logKeyword" placeholder="例如 down / 8.8.8.8 / vpn-us-01" />
+                  </div>
+                  <button class="btn primary" id="btnLogSearch">查询</button>
+                  <button class="btn" id="btnLogExport">导出</button>
+                </div>
+              </div>
+              <div class="bd">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>类型</th>
+                      <th>对象</th>
+                      <th>内容</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="logTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Settings -->
+          <div class="page" data-page="settings" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">系统设置</div>
+                  <div class="row">
+                    <button class="btn" id="btnSaveSettings">保存</button>
+                    <button class="btn" id="btnResetSettings">重置</button>
+                  </div>
+                </div>
+                <div class="bd">
+                  <div class="split">
+                    <div class="item">
+                      <div class="t">
+                        <div class="title">基础参数</div>
+                        <span class="tag"><span class="dot"></span>模拟</span>
+                      </div>
+                      <div class="meta">
+                        <div class="row" style="margin-top: 8px">
+                          <div class="field"><label>Router ID</label><input value="10.0.0.1" /></div>
+                          <div class="field"><label>Local AS</label><input value="65001" /></div>
+                        </div>
+                        <div class="row" style="margin-top: 8px">
+                          <div class="field"><label>日志保留</label><input value="30 天" /></div>
+                          <div class="field"><label>缓存周期</label><input value="60s" /></div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="item">
+                      <div class="t">
+                        <div class="title">权限与用户</div>
+                        <span class="tag"><span class="dot"></span>RBAC</span>
+                      </div>
+                      <div class="meta">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>用户名</th>
+                              <th>角色</th>
+                              <th>状态</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td class="mono">admin</td>
+                              <td>超级管理员</td>
+                              <td><span class="tag good"><span class="dot"></span>启用</span></td>
+                            </tr>
+                            <tr>
+                              <td class="mono">ops</td>
+                              <td>运维</td>
+                              <td><span class="tag good"><span class="dot"></span>启用</span></td>
+                            </tr>
+                            <tr>
+                              <td class="mono">audit</td>
+                              <td>审计</td>
+                              <td><span class="tag warn"><span class="dot"></span>只读</span></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="hd">
+                  <div class="h">环境信息</div>
+                  <span class="tag"><span class="dot"></span>Ubuntu / Docker</span>
+                </div>
+                <div class="bd">
+                  <div class="list">
+                    <div class="item">
+                      <div class="t">
+                        <div class="title">组件</div>
+                        <span class="tag"><span class="dot"></span>版本（模拟）</span>
+                      </div>
+                      <div class="meta mono">
+                        Python 3.x · FRR 8.x · Redis 7.x · MySQL 8.x · OpenVPN 2.6 · strongSwan (可选)
+                      </div>
+                    </div>
+                    <div class="item">
+                      <div class="t">
+                        <div class="title">网络接口</div>
+                        <span class="tag"><span class="dot"></span>ae100.153/154/155</span>
+                      </div>
+                      <div class="meta mono">
+                        ae100.153: 100.128.0.1/30 · ae100.154: 100.127.0.1/30 · ae100.155: (BGP/RR)
+                      </div>
+                    </div>
+                    <div class="item">
+                      <div class="t">
+                        <div class="title">说明</div>
+                        <span class="tag warn"><span class="dot"></span>静态原型</span>
+                      </div>
+                      <div class="meta">
+                        后续接入后端时，可将表格数据替换为 API 返回值（例如 FastAPI），并复用页面结构与字段。
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-backdrop" id="modalBackdrop" role="dialog" aria-modal="true">
+      <div class="modal">
+        <div class="hd">
+          <div class="h" id="modalTitle">详情</div>
+          <div class="row">
+            <button class="btn" id="modalCopy">复制 JSON</button>
+            <button class="btn danger" id="modalClose">关闭</button>
+          </div>
+        </div>
+        <div class="bd">
+          <pre class="mono" id="modalBody" style="white-space: pre-wrap; margin: 0; color: rgba(255,255,255,0.88)"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      const PAGES = {
+        overview: { title: "首页概览", desc: "系统运行状态、告警、关键指标" },
+        bgp: { title: "BGP 管理", desc: "邻居状态、路由学习、导出与诊断" },
+        routes: { title: "路由表查询", desc: "实时 BGP 与缓存路由回退（模拟 API）" },
+        cache: { title: "缓存路由", desc: "BGP 断开时返回最近缓存快照" },
+        mtr: { title: "MTR/ICMP 劫持策略", desc: "按运营商/目标网段匹配，伪造应答" },
+        ipdb: { title: "IP 运营商规则库", desc: "Redis 规则库模拟：IP → 运营商" },
+        gatewayPool: { title: "网关地址池", desc: "方案 A：仅代答（dst_ip 命中）+ 可与上游重合的隔离约束" },
+        gatewaySettings: { title: "网关代答设置", desc: "开关、入口白名单、协议支持、未命中行为" },
+        vpn: { title: "VPN 出口管理", desc: "OpenVPN / GRE / L2TP 作为出口访问外部服务" },
+        audit: { title: "日志审计", desc: "BGP、路由缓存、MTR、VPN、权限等日志" },
+        settings: { title: "系统设置", desc: "基础参数、用户权限、环境信息" },
+      };
+
+      const state = {
+        bgpUp: false, // 默认断开，方便演示缓存回退
+        hijackEnabled: true,
+        cacheVersion: "cache-2026-05-08T14:55:01",
+        cacheTime: "2026-05-08 14:55:01",
+      };
+
+      const mock = {
+        alerts: [
+          {
+            level: "warn",
+            title: "OpenVPN 出口 vpn-us-01 延迟偏高",
+            meta: "p95 延迟 180ms，建议切换至 gre-hk-01 或排查上游链路",
+            ts: "14:58:20",
+          },
+          {
+            level: "bad",
+            title: "上游 RR BGP 邻居断开",
+            meta: "已启用缓存路由回退（仅查询返回缓存，不影响转发策略）",
+            ts: "14:51:03",
+          },
+          {
+            level: "good",
+            title: "MTR 劫持策略命中率正常",
+            meta: "过去 15 分钟命中 31 次，丢包率 0.1%",
+            ts: "14:49:11",
+          },
+        ],
+        bgpNeighbors: [
+          { ip: "100.128.0.2", asn: 65003, name: "C3", routes: 128, updatedAt: "14:58:20", role: "downstream", owner: "客户", enabled: true },
+          { ip: "100.127.0.2", asn: 65004, name: "C4", routes: 96, updatedAt: "14:58:18", role: "downstream", owner: "客户", enabled: true },
+          {
+            ip: "ae100.155",
+            asn: 65000,
+            name: "RR",
+            routes: 0,
+            updatedAt: "14:51:03",
+            role: "upstream",
+            owner: "上游运营商",
+            upstream: true,
+            enabled: true,
+          },
+        ],
+        liveRoutes: [
+          { prefix: "0.0.0.0/0", nextHop: "100.128.0.2", neighbor: "C3", asPath: "65003 3356", lp: 100, med: 0 },
+          { prefix: "8.8.8.0/24", nextHop: "100.127.0.2", neighbor: "C4", asPath: "65004 15169", lp: 120, med: 10 },
+          { prefix: "1.1.1.0/24", nextHop: "100.128.0.2", neighbor: "C3", asPath: "65003 13335", lp: 110, med: 20 },
+          { prefix: "203.0.113.0/24", nextHop: "100.127.0.2", neighbor: "C4", asPath: "65004 64500", lp: 100, med: 30 },
+        ],
+        cachedRoutes: [
+          { prefix: "0.0.0.0/0", nextHop: "100.128.0.2", neighbor: "RR", asPath: "65000 3356", lp: 100, med: 0, cachedAt: "2026-05-08 14:55:01" },
+          { prefix: "8.8.8.0/24", nextHop: "100.128.0.2", neighbor: "RR", asPath: "65000 15169", lp: 110, med: 10, cachedAt: "2026-05-08 14:55:01" },
+          { prefix: "1.1.1.0/24", nextHop: "100.127.0.2", neighbor: "RR", asPath: "65000 13335", lp: 110, med: 20, cachedAt: "2026-05-08 14:55:01" },
+          { prefix: "198.51.100.0/24", nextHop: "100.127.0.2", neighbor: "RR", asPath: "65000 64512", lp: 90, med: 50, cachedAt: "2026-05-08 14:55:01" },
+        ],
+        mtrPolicies: [
+          { id: 1, isp: "China Telecom", cidr: "0.0.0.0/0", replyIp: "100.128.0.1", ttl: "固定 TTL=55", delay: "20~35ms", enabled: true },
+          { id: 2, isp: "China Mobile", cidr: "0.0.0.0/0", replyIp: "100.127.0.1", ttl: "动态 TTL", delay: "35~60ms", enabled: true },
+          { id: 3, isp: "China Unicom", cidr: "0.0.0.0/0", replyIp: "100.128.0.1", ttl: "固定 TTL=45", delay: "25~40ms", enabled: false },
+        ],
+        mtrStats: [
+          { title: "China Telecom", meta: "命中 18 次 · 平均延迟 28ms · TTL=55", level: "good" },
+          { title: "China Mobile", meta: "命中 11 次 · 平均延迟 44ms · 动态 TTL", level: "warn" },
+          { title: "未知/其它", meta: "命中 2 次 · 默认策略放行", level: "good" },
+        ],
+        ipRules: [
+          { cidr: "8.8.8.0/24", isp: "Google", source: "import", version: "ipdb-2026-05-08", updatedAt: "2026-05-08 14:26:00" },
+          { cidr: "1.1.1.0/24", isp: "Cloudflare", source: "import", version: "ipdb-2026-05-08", updatedAt: "2026-05-08 14:26:00" },
+          { cidr: "203.0.113.0/24", isp: "China Telecom", source: "import", version: "ipdb-2026-05-08", updatedAt: "2026-05-08 14:26:00" },
+          { cidr: "198.51.100.0/24", isp: "China Mobile", source: "import", version: "ipdb-2026-05-08", updatedAt: "2026-05-08 14:26:00" },
+        ],
+        gatewayIps: [
+          { ip: "100.64.1.1", group: "default", enabled: true, ingress: "ae100.153", lastHit: "15:58:01", hits: 42, note: "客户网关A（代答）" },
+          { ip: "100.64.2.1", group: "default", enabled: true, ingress: "ae100.154", lastHit: "15:57:42", hits: 19, note: "客户网关B（代答）" },
+          { ip: "100.127.0.2", group: "overlap", enabled: false, ingress: "ae100.153", lastHit: "—", hits: 0, note: "示例：可能与上层IP重合（已停用）" },
+          { ip: "203.0.113.254", group: "ct", enabled: true, ingress: "ae100.154", lastHit: "15:56:12", hits: 7, note: "按业务需要补充网关地址" },
+        ],
+        gatewayReplySettings: {
+          enabled: true,
+          ingressIfaces: "", // 建议配置：例如 ae100.153, ae100.154
+          sourceCidrs: "", // 建议配置：例如 10.0.0.0/8
+          udpTrace: true,
+          icmpTrace: true,
+          missAction: "pass",
+        },
+        gatewayHitPreview: [
+          { ts: "15:58:01", src: "10.12.0.8", gw: "100.64.1.1", proto: "UDP-trace", action: "ICMP Port Unreachable" },
+          { ts: "15:57:42", src: "10.33.4.21", gw: "100.64.2.1", proto: "ICMP-trace", action: "ICMP Echo Reply" },
+          { ts: "15:56:12", src: "10.9.1.3", gw: "203.0.113.254", proto: "UDP-trace", action: "ICMP Port Unreachable" },
+        ],
+        vpnLinks: [
+          { name: "vpn-us-01", type: "OpenVPN", endpoint: "45.10.1.20:1194", status: "up", prio: 1, rtt: 82, traffic: "1.2GB/日" },
+          { name: "gre-hk-01", type: "GRE", endpoint: "103.9.8.1", status: "up", prio: 2, rtt: 26, traffic: "3.9GB/日" },
+          { name: "l2tp-jp-01", type: "L2TP", endpoint: "150.12.3.8", status: "down", prio: 3, rtt: 0, traffic: "—" },
+        ],
+        vpnPolicies: [
+          { dst: "8.8.8.0/24", src: "C3", vpn: "vpn-us-01", fail: "切换备用 VPN", enabled: true },
+          { dst: "1.1.1.0/24", src: "C4", vpn: "gre-hk-01", fail: "拒绝转发", enabled: true },
+          { dst: "0.0.0.0/0", src: "默认", vpn: "gre-hk-01", fail: "回退普通出口", enabled: false },
+        ],
+        logs: [
+          { ts: "14:58:22", type: "BGP", obj: "RR", msg: "BGP 邻居断开，已切换路由查询回退到缓存快照" },
+          { ts: "14:58:25", type: "ROUTE", obj: "RouteCache", msg: "返回 cached_bgp（cache_time=2026-05-08 14:55:01）" },
+          { ts: "14:59:01", type: "MTR", obj: "8.8.8.8", msg: "命中运营商规则：Google，按策略返回伪造应答（TTL=55）" },
+          { ts: "14:59:10", type: "VPN", obj: "vpn-us-01", msg: "隧道延迟过高（p95=180ms），建议切换或排查" },
+          { ts: "15:58:01", type: "GATEWAY_REPLY", obj: "100.64.1.1", msg: "命中网关池：dst_ip=100.64.1.1，回 ICMP Port Unreachable（源IP伪装为网关IP）" },
+          { ts: "15:57:42", type: "GATEWAY_REPLY", obj: "100.64.2.1", msg: "命中网关池：dst_ip=100.64.2.1，回 ICMP Echo Reply（源IP伪装为网关IP）" },
+          { ts: "15:00:02", type: "AUTH", obj: "admin", msg: "登录成功（IP=10.0.0.10）" },
+        ],
+      };
+
+      // ---------- utilities ----------
+      const $ = (sel, root = document) => root.querySelector(sel);
+      const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+      const nowHHMMSS = () => {
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, "0");
+        return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+      };
+
+      function toast(msg) {
+        const wrap = $("#toast");
+        const el = document.createElement("div");
+        el.className = "t";
+        el.innerHTML = `<div class="msg">${msg}</div><button class="x" title="关闭">×</button>`;
+        el.querySelector(".x").addEventListener("click", () => el.remove());
+        wrap.appendChild(el);
+        setTimeout(() => {
+          if (el.isConnected) el.remove();
+        }, 3800);
+      }
+
+      function statusTag(status) {
+        if (status === "up") return `<span class="tag good"><span class="dot"></span>在线</span>`;
+        if (status === "warn") return `<span class="tag warn"><span class="dot"></span>异常</span>`;
+        return `<span class="tag bad"><span class="dot"></span>断开</span>`;
+      }
+
+      function openModal(title, obj) {
+        $("#modalTitle").textContent = title;
+        $("#modalBody").textContent = JSON.stringify(obj, null, 2);
+        $("#modalBackdrop").classList.add("show");
+      }
+
+      function closeModal() {
+        $("#modalBackdrop").classList.remove("show");
+      }
+
+      // ---------- mock behaviors ----------
+      function peerRoleTag(role) {
+        if (role === "upstream") return `<span class="tag warn"><span class="dot"></span>上游运营商</span>`;
+        if (role === "downstream") return `<span class="tag good"><span class="dot"></span>下游客户</span>`;
+        return `<span class="tag"><span class="dot"></span>未知</span>`;
+      }
+
+      function computeBGPState() {
+        const upstreamEstablished = mock.bgpNeighbors.filter(
+          (n) => (n.upstream || n.role === "upstream") && n.enabled !== false && state.bgpUp,
+        ).length;
+        const downstreamEstablished = mock.bgpNeighbors.filter((n) => n.role === "downstream" && n.enabled !== false).length;
+        const established = upstreamEstablished + downstreamEstablished;
+        $("#kpiFRR").textContent = state.bgpUp ? "正常" : "断开";
+        $("#kpiFRRSub").textContent = state.bgpUp
+          ? `上游 ${upstreamEstablished} / 下游 ${downstreamEstablished}（Established）`
+          : `上游 0 / 下游 ${downstreamEstablished}（上游断开，回退缓存）`;
+        $("#tagBGPStatus").innerHTML = `<span class="dot"></span>BGP: ${state.bgpUp ? "up" : "down"}`;
+        $("#tagBGPStatus").className = `tag ${state.bgpUp ? "good" : "bad"}`;
+        $("#badgeBGP").textContent = String(established);
+      }
+
+      function renderOverview() {
+        $("#overviewNow").textContent = `更新时间：${nowHHMMSS()}`;
+        $("#pillClock").textContent = nowHHMMSS();
+
+        // jitter KPI
+        const cpu = 12 + Math.round(Math.random() * 18);
+        const mem = 35 + Math.round(Math.random() * 22);
+        const loss = (Math.random() * 0.3).toFixed(1);
+        $("#kpiCPU").textContent = `${cpu}%`;
+        $("#kpiMem").textContent = `${mem}%`;
+        $("#kpiLoss").textContent = `${loss}%`;
+
+        const upCount = mock.vpnLinks.filter((x) => x.status === "up").length;
+        const downCount = mock.vpnLinks.filter((x) => x.status !== "up").length;
+        $("#kpiVPN").textContent = `${upCount} 在线`;
+        $("#kpiVPNSub").textContent = `${downCount} 异常`;
+        $("#badgeVPN").textContent = String(mock.vpnLinks.length);
+
+        // alerts
+        const list = $("#alertList");
+        list.innerHTML = "";
+        mock.alerts.forEach((a) => {
+          const el = document.createElement("div");
+          el.className = "item";
+          el.innerHTML = `
+            <div class="t">
+              <div class="title">${a.title}</div>
+              <span class="tag ${a.level}"><span class="dot"></span>${a.ts}</span>
+            </div>
+            <div class="meta">${a.meta}</div>
+          `;
+          list.appendChild(el);
+        });
+
+        $("#badgeAlerts").textContent = String(mock.alerts.length);
+
+        // gateway reply summary
+        const gwEnabled = !!mock.gatewayReplySettings?.enabled;
+        const gwTotal = (mock.gatewayIps || []).length;
+        const gwEnabledCount = (mock.gatewayIps || []).filter((x) => x.enabled).length;
+        const scopeIface = (mock.gatewayReplySettings?.ingressIfaces || "").trim();
+        const scopeSrc = (mock.gatewayReplySettings?.sourceCidrs || "").trim();
+        const scopeText = scopeIface || scopeSrc ? "已限定" : "未限定";
+        $("#badgeGateway").textContent = String(gwTotal);
+        $("#tagGatewayReply").innerHTML = `<span class="dot"></span>网关代答：${gwEnabled ? "开启" : "关闭"}（启用IP ${gwEnabledCount}/${gwTotal}）`;
+        $("#tagGatewayReply").className = `tag ${gwEnabled ? "good" : "warn"}`;
+        $("#tagGatewayScope").innerHTML = `<span class="dot"></span>范围：${scopeText}`;
+        $("#tagGatewayScope").className = `tag ${scopeIface || scopeSrc ? "good" : "bad"}`;
+        const hits = (mock.gatewayHitPreview || []).length;
+        $("#kpiGatewayHits").textContent = `网关代答命中：${hits} 条（模拟）`;
+      }
+
+      function renderBGP() {
+        const tbody = $("#bgpTable");
+        tbody.innerHTML = "";
+        mock.bgpNeighbors.forEach((n) => {
+          const neighborOn = n.enabled !== false;
+          const isUp = n.upstream ? neighborOn && state.bgpUp : neighborOn;
+          const status = isUp ? "up" : "down";
+          const routes = n.upstream ? (isUp ? 260 : 0) : neighborOn ? n.routes : 0;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${n.ip}</td>
+            <td class="mono">${n.asn}</td>
+            <td>${peerRoleTag(n.role)}</td>
+            <td>${statusTag(status)}</td>
+            <td class="mono">${routes} 条</td>
+            <td class="mono">${n.updatedAt}</td>
+            <td class="row">
+              <button class="btn" data-act="detail">详情</button>
+              <label class="bgp-sw" title="邻居管理性启停（原型）">
+                <input type="checkbox" data-act="bgp-neighbor" ${neighborOn ? "checked" : ""} />
+                <span class="track"><span class="knob"></span></span>
+                <span class="cap" data-bgp-cap>${neighborOn ? "开启" : "关闭"}</span>
+              </label>
+            </td>
+          `;
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () =>
+            openModal(`BGP 邻居详情：${n.name}`, {
+              ...n,
+              neighborAdminEnabled: neighborOn,
+              state: isUp ? "Established" : "Down",
+              holdTime: "180s",
+              keepalive: "60s",
+              prefixesReceived: routes,
+              prefixesAdvertised: n.upstream ? 12 : 0,
+              roleLabel:
+                n.role === "upstream"
+                  ? "上游运营商"
+                  : n.role === "downstream"
+                    ? "下游客户"
+                    : n.role === "rr"
+                      ? "RR"
+                      : "未知",
+            }),
+          );
+          const sw = tr.querySelector('input[data-act="bgp-neighbor"]');
+          const cap = tr.querySelector("[data-bgp-cap]");
+          sw.addEventListener("change", () => {
+            n.enabled = sw.checked;
+            if (cap) cap.textContent = sw.checked ? "开启" : "关闭";
+            toast(sw.checked ? `BGP 邻居 ${n.name} 已开启（原型）` : `BGP 邻居 ${n.name} 已关闭（原型）`);
+            renderAll();
+          });
+          tbody.appendChild(tr);
+        });
+      }
+
+      function getRouteDataset(sourceMode) {
+        // sourceMode: auto | live | cached
+        if (sourceMode === "live") return state.bgpUp ? mock.liveRoutes : [];
+        if (sourceMode === "cached") return mock.cachedRoutes.map(({ cachedAt, ...r }) => r);
+        // auto
+        if (state.bgpUp) return mock.liveRoutes;
+        return mock.cachedRoutes.map(({ cachedAt, ...r }) => r);
+      }
+
+      function renderRoutes() {
+        const prefix = $("#routePrefix").value.trim();
+        const mode = $("#routeSource").value;
+        const ds = getRouteDataset(mode);
+
+        const normalized = (p) => p.replace(/\s+/g, "");
+        const filtered = ds.filter((r) => {
+          if (!prefix) return true;
+          return normalized(r.prefix).includes(normalized(prefix));
+        });
+
+        const usedSource =
+          mode === "auto" ? (state.bgpUp ? "live_bgp" : "cached_bgp") : mode === "live" ? "live_bgp" : "cached_bgp";
+        $("#tagRouteMode").innerHTML = `<span class="dot"></span>source: ${usedSource}`;
+        $("#tagRouteMode").className = `tag ${usedSource === "live_bgp" ? "good" : "warn"}`;
+        $("#tagCacheTime").innerHTML = `<span class="dot"></span>cache_time: ${state.cacheTime}`;
+        $("#routeCount").textContent = `${filtered.length} 条`;
+
+        const tbody = $("#routeTable");
+        tbody.innerHTML = "";
+        filtered.forEach((r) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${r.prefix}</td>
+            <td class="mono">${r.nextHop}</td>
+            <td>${r.neighbor}</td>
+            <td class="mono">${r.asPath}</td>
+            <td class="mono">${r.lp ?? "-"}</td>
+            <td class="mono">${r.med ?? "-"}</td>
+            <td>${usedSource === "live_bgp" ? '<span class="tag good"><span class="dot"></span>实时</span>' : '<span class="tag warn"><span class="dot"></span>缓存</span>'}</td>
+            <td><button class="btn" data-act="detail">详情</button></td>
+          `;
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () =>
+            openModal(`路由详情：${r.prefix}`, { ...r, source: usedSource, bgpStatus: state.bgpUp ? "up" : "down" }),
+          );
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderCache() {
+        $("#tagCacheVersion").innerHTML = `<span class="dot"></span>version: ${state.cacheVersion}`;
+        $("#cacheMeta").textContent = `cached_at=${state.cacheTime} · 共 ${mock.cachedRoutes.length} 条`;
+        const tbody = $("#cacheTable");
+        tbody.innerHTML = "";
+        mock.cachedRoutes.forEach((r) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${r.prefix}</td>
+            <td class="mono">${r.nextHop}</td>
+            <td>${r.neighbor}</td>
+            <td class="mono">${r.asPath}</td>
+            <td class="mono">${r.cachedAt}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderMTR() {
+        $("#tagHijack").className = `tag ${state.hijackEnabled ? "good" : "bad"}`;
+        $("#tagHijack").innerHTML = `<span class="dot"></span>${state.hijackEnabled ? "已开启" : "已关闭"}`;
+        const tbody = $("#mtrTable");
+        tbody.innerHTML = "";
+        mock.mtrPolicies.forEach((p) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${p.id}</td>
+            <td>${p.isp}</td>
+            <td class="mono">${p.cidr}</td>
+            <td class="mono">${p.replyIp}</td>
+            <td>${p.ttl}</td>
+            <td>${p.delay}</td>
+            <td>${p.enabled ? '<span class="tag good"><span class="dot"></span>启用</span>' : '<span class="tag warn"><span class="dot"></span>停用</span>'}</td>
+            <td class="row">
+              <button class="btn" data-act="toggle">${p.enabled ? "禁用" : "启用"}</button>
+              <button class="btn" data-act="detail">详情</button>
+            </td>
+          `;
+          tr.querySelector('[data-act="toggle"]').addEventListener("click", () => {
+            p.enabled = !p.enabled;
+            toast(`策略 #${p.id} 已${p.enabled ? "启用" : "停用"}`);
+            renderMTR();
+          });
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () => openModal(`MTR 策略 #${p.id}`, p));
+          tbody.appendChild(tr);
+        });
+
+        const stats = $("#mtrStats");
+        stats.innerHTML = "";
+        mock.mtrStats.forEach((s) => {
+          const el = document.createElement("div");
+          el.className = "item";
+          el.innerHTML = `
+            <div class="t">
+              <div class="title">${s.title}</div>
+              <span class="tag ${s.level}"><span class="dot"></span>${s.level}</span>
+            </div>
+            <div class="meta">${s.meta}</div>
+          `;
+          stats.appendChild(el);
+        });
+      }
+
+      function renderIPDB() {
+        const tbody = $("#ipTable");
+        tbody.innerHTML = "";
+        mock.ipRules.forEach((r) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${r.cidr}</td>
+            <td>${r.isp}</td>
+            <td class="mono">${r.source}</td>
+            <td class="mono">${r.version}</td>
+            <td class="mono">${r.updatedAt}</td>
+            <td class="row">
+              <button class="btn" data-act="detail">详情</button>
+              <button class="btn" data-act="del">删除</button>
+            </td>
+          `;
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () => openModal(`规则：${r.cidr}`, r));
+          tr.querySelector('[data-act="del"]').addEventListener("click", () => {
+            toast("原型不执行真实删除，仅展示交互");
+          });
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderGatewayPool() {
+        const kw = ($("#gatewaySearch")?.value || "").trim();
+        const st = ($("#gatewayStatus")?.value || "all").trim();
+        const ds = (mock.gatewayIps || []).filter((x) => {
+          if (st === "enabled" && !x.enabled) return false;
+          if (st === "disabled" && x.enabled) return false;
+          if (!kw) return true;
+          return `${x.ip} ${x.group} ${x.note}`.toLowerCase().includes(kw.toLowerCase());
+        });
+
+        const tbody = $("#gatewayTable");
+        if (!tbody) return;
+        tbody.innerHTML = "";
+        ds.forEach((g) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${g.ip}</td>
+            <td class="mono">${g.group || "default"}</td>
+            <td>${g.enabled ? '<span class="tag good"><span class="dot"></span>启用</span>' : '<span class="tag warn"><span class="dot"></span>停用</span>'}</td>
+            <td class="mono">${g.ingress || "—"}</td>
+            <td class="mono">${g.lastHit || "—"}</td>
+            <td class="mono">${g.hits ?? 0}</td>
+            <td>${g.note || ""}</td>
+            <td class="row">
+              <button class="btn" data-act="toggle">${g.enabled ? "停用" : "启用"}</button>
+              <button class="btn" data-act="detail">详情</button>
+            </td>
+          `;
+          tr.querySelector('[data-act="toggle"]').addEventListener("click", () => {
+            g.enabled = !g.enabled;
+            toast(`网关IP ${g.ip} 已${g.enabled ? "启用" : "停用"}`);
+            renderGatewayPool();
+            renderOverview();
+          });
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () => openModal(`网关IP：${g.ip}`, g));
+          tbody.appendChild(tr);
+        });
+        const cnt = $("#gatewayCount");
+        if (cnt) cnt.textContent = `${ds.length} 条`;
+      }
+
+      function renderGatewaySettings() {
+        const s = mock.gatewayReplySettings || {};
+        const enabled = !!s.enabled;
+        const iface = (s.ingressIfaces || "").trim();
+        const src = (s.sourceCidrs || "").trim();
+        const hasScope = !!iface || !!src;
+
+        const tag = $("#tagGatewayEnabled");
+        if (tag) {
+          tag.className = `tag ${enabled ? "good" : "warn"}`;
+          tag.innerHTML = `<span class="dot"></span>${enabled ? "已开启" : "已关闭"}`;
+        }
+
+        const ifEl = $("#gwIngressIfaces");
+        const srcEl = $("#gwSourceCidrs");
+        if (ifEl) ifEl.value = s.ingressIfaces || "";
+        if (srcEl) srcEl.value = s.sourceCidrs || "";
+        const udpEl = $("#gwUdpTrace");
+        const icmpEl = $("#gwIcmpTrace");
+        if (udpEl) udpEl.checked = !!s.udpTrace;
+        if (icmpEl) icmpEl.checked = !!s.icmpTrace;
+        const missEl = $("#gwMissAction");
+        if (missEl) missEl.value = s.missAction || "pass";
+
+        const hint = $("#gwScopeHint");
+        if (hint) {
+          hint.textContent = hasScope
+            ? `当前范围：${iface ? `入接口=${iface}` : ""}${iface && src ? "；" : ""}${src ? `源网段=${src}` : ""}`
+            : "当前未限定范围：建议至少配置“入接口白名单”或“源网段白名单”，避免与上游 IP 重合时误代答。";
+        }
+
+        const risk = $("#gwRiskBox");
+        if (risk) risk.style.display = enabled && !hasScope ? "" : "none";
+
+        const preview = $("#gwHitPreview");
+        if (preview) {
+          preview.innerHTML = "";
+          (mock.gatewayHitPreview || []).forEach((h) => {
+            const el = document.createElement("div");
+            el.className = "item";
+            el.innerHTML = `
+              <div class="t">
+                <div class="title mono">${h.ts} · dst=${h.gw}</div>
+                <span class="tag good"><span class="dot"></span>${h.proto}</span>
+              </div>
+              <div class="meta mono">src=${h.src} · action=${h.action}</div>
+            `;
+            preview.appendChild(el);
+          });
+        }
+      }
+
+      function renderVPN() {
+        const tbody = $("#vpnTable");
+        tbody.innerHTML = "";
+        mock.vpnLinks.forEach((v) => {
+          const st = v.status === "up" ? "up" : "down";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${v.name}</td>
+            <td>${v.type}</td>
+            <td class="mono">${v.endpoint}</td>
+            <td>${statusTag(st)}</td>
+            <td class="mono">${v.prio}</td>
+            <td class="mono">${v.rtt ? v.rtt + "ms" : "—"}</td>
+            <td class="mono">${v.traffic}</td>
+            <td class="row">
+              <button class="btn" data-act="detail">详情</button>
+              <button class="btn" data-act="toggle">${v.status === "up" ? "断开" : "恢复"}</button>
+            </td>
+          `;
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () => openModal(`VPN：${v.name}`, v));
+          tr.querySelector('[data-act="toggle"]').addEventListener("click", () => {
+            v.status = v.status === "up" ? "down" : "up";
+            toast(`${v.name} 已${v.status === "up" ? "恢复" : "断开"}`);
+            renderVPN();
+            renderOverview();
+          });
+          tbody.appendChild(tr);
+        });
+
+        const pt = $("#vpnPolicyTable");
+        pt.innerHTML = "";
+        mock.vpnPolicies.forEach((p) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${p.dst}</td>
+            <td>${p.src}</td>
+            <td class="mono">${p.vpn}</td>
+            <td>${p.fail}</td>
+            <td>${p.enabled ? '<span class="tag good"><span class="dot"></span>启用</span>' : '<span class="tag warn"><span class="dot"></span>停用</span>'}</td>
+            <td class="row">
+              <button class="btn" data-act="toggle">${p.enabled ? "禁用" : "启用"}</button>
+              <button class="btn" data-act="detail">详情</button>
+            </td>
+          `;
+          tr.querySelector('[data-act="toggle"]').addEventListener("click", () => {
+            p.enabled = !p.enabled;
+            toast(`VPN 策略 ${p.dst} 已${p.enabled ? "启用" : "停用"}`);
+            renderVPN();
+          });
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () => openModal(`VPN 路由策略：${p.dst}`, p));
+          pt.appendChild(tr);
+        });
+      }
+
+      function renderLogs() {
+        const type = $("#logType").value;
+        const kw = $("#logKeyword").value.trim().toLowerCase();
+        const ds = mock.logs.filter((l) => {
+          if (type !== "all" && l.type !== type) return false;
+          if (!kw) return true;
+          return `${l.ts} ${l.type} ${l.obj} ${l.msg}`.toLowerCase().includes(kw);
+        });
+        const tbody = $("#logTable");
+        tbody.innerHTML = "";
+        ds.forEach((l) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${l.ts}</td>
+            <td class="mono">${l.type}</td>
+            <td class="mono">${l.obj}</td>
+            <td>${l.msg}</td>
+            <td><button class="btn" data-act="detail">详情</button></td>
+          `;
+          tr.querySelector('[data-act="detail"]').addEventListener("click", () => openModal(`日志：${l.type}`, l));
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderAll() {
+        computeBGPState();
+        renderOverview();
+        renderBGP();
+        renderRoutes();
+        renderCache();
+        renderMTR();
+        renderIPDB();
+        renderGatewayPool();
+        renderGatewaySettings();
+        renderVPN();
+        renderLogs();
+      }
+
+      // ---------- nav ----------
+      function setPage(page) {
+        $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === page));
+        $$(".page").forEach((p) => (p.style.display = p.dataset.page === page ? "" : "none"));
+        $("#pageTitle").textContent = PAGES[page]?.title ?? "—";
+        $("#pageDesc").textContent = PAGES[page]?.desc ?? "";
+      }
+
+      $("#nav").addEventListener("click", (e) => {
+        const a = e.target.closest("a[data-page]");
+        if (!a) return;
+        setPage(a.dataset.page);
+      });
+
+      // ---------- events ----------
+      $("#btnRefresh").addEventListener("click", () => {
+        renderAll();
+        toast("已刷新模拟数据");
+      });
+
+      $("#btnToggleBGP").addEventListener("click", () => {
+        state.bgpUp = !state.bgpUp;
+        $("#btnToggleBGP").textContent = `模拟 BGP：${state.bgpUp ? "恢复" : "断开"}`;
+        // when bgp down, bump alert list
+        if (!state.bgpUp) {
+          toast("上游 BGP 断开：路由查询将回退缓存快照");
+        } else {
+          toast("上游 BGP 恢复：路由查询将优先实时 BGP");
+        }
+        renderAll();
+      });
+
+      $("#btnClearAlerts").addEventListener("click", () => {
+        mock.alerts = [];
+        renderOverview();
+        toast("已清空告警（模拟）");
+      });
+
+      $("#btnRouteSearch").addEventListener("click", () => {
+        renderRoutes();
+        toast("查询完成（模拟）");
+      });
+      $("#routeSource").addEventListener("change", renderRoutes);
+
+      $("#btnRebuildCache").addEventListener("click", () => {
+        const d = new Date();
+        const ts = d.toISOString().replace("T", " ").slice(0, 19);
+        state.cacheTime = ts;
+        state.cacheVersion = `cache-${d.toISOString().slice(0, 19)}`;
+        mock.cachedRoutes = mock.cachedRoutes.map((r) => ({ ...r, cachedAt: ts }));
+        renderCache();
+        renderRoutes();
+        toast("已生成新缓存快照（模拟）");
+      });
+      $("#btnPurgeCache").addEventListener("click", () => {
+        toast("原型不执行真实清理，仅展示交互");
+      });
+
+      $("#btnToggleHijack").addEventListener("click", () => {
+        state.hijackEnabled = !state.hijackEnabled;
+        renderMTR();
+        toast(`劫持总开关已${state.hijackEnabled ? "开启" : "关闭"}`);
+      });
+
+      $("#btnIpLookup").addEventListener("click", () => {
+        const ip = $("#ipLookup").value.trim();
+        if (!ip) {
+          $("#ipLookupResult").textContent = "请输入 IP";
+          return;
+        }
+        // naive lookup: match first /24 based on first 3 octets
+        const prefix = ip.split(".").slice(0, 3).join(".") + ".0/24";
+        const hit = mock.ipRules.find((r) => r.cidr === prefix);
+        $("#ipLookupResult").textContent = hit ? `命中：${hit.isp}（${hit.cidr}）` : "未命中：默认 Unknown";
+      });
+
+      $("#btnGatewayFilter")?.addEventListener("click", () => {
+        renderGatewayPool();
+        toast("已筛选网关地址（模拟）");
+      });
+      $("#gatewayStatus")?.addEventListener("change", renderGatewayPool);
+
+      $("#btnToggleGatewayReply")?.addEventListener("click", () => {
+        mock.gatewayReplySettings.enabled = !mock.gatewayReplySettings.enabled;
+        renderGatewaySettings();
+        renderOverview();
+        toast(`网关代答已${mock.gatewayReplySettings.enabled ? "开启" : "关闭"}`);
+      });
+      $("#btnSaveGatewaySettings")?.addEventListener("click", () => {
+        mock.gatewayReplySettings.ingressIfaces = $("#gwIngressIfaces")?.value || "";
+        mock.gatewayReplySettings.sourceCidrs = $("#gwSourceCidrs")?.value || "";
+        mock.gatewayReplySettings.udpTrace = !!$("#gwUdpTrace")?.checked;
+        mock.gatewayReplySettings.icmpTrace = !!$("#gwIcmpTrace")?.checked;
+        mock.gatewayReplySettings.missAction = $("#gwMissAction")?.value || "pass";
+        renderGatewaySettings();
+        renderOverview();
+        toast("已保存网关代答设置（模拟）");
+      });
+
+      $("#btnLogSearch").addEventListener("click", () => {
+        renderLogs();
+        toast("日志筛选完成（模拟）");
+      });
+
+      // modal
+      $("#modalClose").addEventListener("click", closeModal);
+      $("#modalBackdrop").addEventListener("click", (e) => {
+        if (e.target === e.currentTarget) closeModal();
+      });
+      $("#modalCopy").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText($("#modalBody").textContent || "");
+          toast("已复制 JSON 到剪贴板");
+        } catch {
+          toast("复制失败：浏览器不允许剪贴板访问（可手动复制）");
+        }
+      });
+
+      // placeholder buttons
+      [
+        ["#btnAddNeighbor", "新增邻居"],
+        ["#btnExportBGP", "导出 BGP"],
+        ["#btnRouteExport", "导出路由"],
+        ["#btnAddMtr", "新增 MTR 策略"],
+        ["#btnImportIP", "导入 IP 规则"],
+        ["#btnExportIP", "导出 IP 规则"],
+        ["#btnAddGatewayIp", "新增网关 IP"],
+        ["#btnImportGatewayIp", "导入网关 IP"],
+        ["#btnExportGatewayIp", "导出网关 IP"],
+        ["#btnAddVPN", "新增 VPN"],
+        ["#btnTestVPN", "VPN 连通性测试"],
+        ["#btnAddVpnPolicy", "新增 VPN 策略"],
+        ["#btnLogExport", "导出日志"],
+        ["#btnSaveSettings", "保存设置"],
+        ["#btnResetSettings", "重置设置"],
+      ].forEach(([sel, name]) => {
+        const el = $(sel);
+        if (!el) return;
+        el.addEventListener("click", () => toast(`${name}：原型不执行真实操作，仅展示交互`));
+      });
+
+      // clock ticker
+      setInterval(() => {
+        $("#pillClock").textContent = nowHHMMSS();
+      }, 1000);
+
+      // init
+      $("#btnToggleBGP").textContent = `模拟 BGP：${state.bgpUp ? "恢复" : "断开"}`;
+      renderAll();
+      setPage("overview");
+    </script>
+  </body>
+</html>
+

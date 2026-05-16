@@ -1,0 +1,23 @@
+[Unit]
+Description=MTR ICMP OP (FastAPI)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/mtr_op
+Environment=MTR_OP_DB=/root/mtr_op/data.db
+Environment=MTR_OP_NFT=/root/mtr_op/nft_mtr_spoof.nft
+Environment=MTR_SATELLITE_PHY_VRF=default
+Environment=MTR_AUTO_SATELLITE_VRF=note
+Environment=MTR_AUTO_SATELLITE_VRF_NOTE=BGPSAT
+Environment=MTR_SATELLITE_PEER_IP=10.133.152.204
+Environment=MTR_SATELLITE_BGP_TCP_SOURCE=spoof
+Environment=MTR_BGP_IPVLAN_AUTO=1
+Environment=MTR_BGP_IPVLAN_BASE_IFACE=ens192
+Environment=MTR_BGP_IPVLAN_PEER_IP=10.133.152.204
+ExecStart=/root/mtr_op/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8808
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
