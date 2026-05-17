@@ -102,14 +102,14 @@ flowchart LR
 | `GET`/`POST`/`PATCH`/`DELETE` | `/api/arp-spoof/targets` | 冒充网关条目；保存后会触发 BGP ipvlan 卫星收敛（`MTR_BGP_IPVLAN_AUTO`，默认开），带 `satellite_vrf` 的条目由对应 VRF 持有 /32，不再额外加到物理口主表 |
 | `POST` | `/api/arp-spoof/satellite-vrfs/reconcile` | 按当前库 + 环境变量执行卫星 VRF 对齐；返回旧 veth 方案和新 ipvlan L2 方案的结果，便于 **cron** 或手工补跑 |
 | `POST` | `/api/bgp/ipvlan-satellites/reconcile` | 仅执行新 ipvlan L2 卫星 BGP 收敛：创建/维护 `iv{末字节}@物理口`、VRF 路由、清理干扰 `ip rule` |
-| `GET` | `/api/bgp/vrfs` | FRR `router bgp` 实例；并并入内核 **`ip link type vrf`** 中尚未建仓的 VRF（`has_router_bgp`） |
-| `POST` | `/api/bgp/instances` | body：`vrf`、`local_as`（可空）、`router_id`（可空）；可选 **`create_kernel_vrf_if_missing`** / **`kernel_rt_table`** — 先按需建 Linux VRF 再显式 **`router bgp <AS> vrf <vrf>`** |
-| `GET` | `/api/bgp/neighbors` | 查询参数 `vrf`：邻居列表；字段含与 **FRR summary** 对齐的 **V、MsgRcvd、MsgSent、TblVer、InQ、OutQ** 及 `pfx_rcd`、`session_state` 等 |
-| `POST` | `/api/bgp/neighbors` | body：`vrf`、`neighbor_ip`、`remote_as`、可选 `role`、`source_ip`、`bgp_local_as`、`bgp_router_id`；**`create_kernel_vrf_if_missing`**（默认 true）为 true 且 **`MTR_BGP_AUTO_CREATE_KERNEL_VRF`** 未关时，内核尚无该 VRF 名则先 **`ip link add … type vrf`**；可选 **`kernel_rt_table`**；若 VRF 尚无 BGP 则自动 **`router bgp`**；**同一 VRF 下同一对端 IP 仅能一条** → **409**；多会话见 **[`docs/BGP_ARP_SPOOF_MULTI_SESSION.md`](../docs/BGP_ARP_SPOOF_MULTI_SESSION.md)** |
-| `PATCH` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | body：可选 `neighbor_ip`（改对端地址：删旧建新）、`remote_as`、`role`、`note`、`source_ip`；改 AS / 邻居 IP 会删后重建；目标 `neighbor_ip` 已被其它邻居占用则 **409** `neighbor_ip_conflict` |
-| `DELETE` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | 从 FRR 移除邻居并删元数据 |
-| `POST` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/toggle` | body：`{"enabled": bool}` |
-| `POST` | `/api/bgp/sync-from-frr` | 合并 FRR 邻居到库 + **写入预设角色**（默认 `vrf2103:10.133.153.204:upstream`，`vrf2102:10.133.152.204:downstream`；见 **`MTR_BGP_DB_PRESETS`**） |
+| `GET` | `/api/bgp/vrfs` | meta / 卫星配置 / 内核 **`ip link type vrf`** 中的 VRF 列表 |
+| `POST` | `/api/bgp/instances` | 按需创建内核 VRF（GoBGP 按 VRF 懒启动 TX，无需 FRR `router bgp`） |
+| `GET` | `/api/bgp/neighbors` | 从 **bgp-agent** 读邻居；与 SQLite meta 合并展示 |
+| `POST` | `/api/bgp/neighbors` | 下发 **bgp-agent**（RR→RX，下游/卫星→TX）+ 写 meta；可选建内核 VRF / ipvlan |
+| `PATCH` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | 删后重建 Agent 邻居并更新 meta |
+| `DELETE` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | 从 Agent 移除（RR 除外）并删 meta |
+| `POST` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/toggle` | body：`{"enabled": bool}` → Agent |
+| `POST` | `/api/bgp/sync-from-frr` | 从 **bgp-agent** 合并邻居到库 + 预设角色（URL 保留兼容） |
 | `GET` | `/api/vpn/summary` | VPN 隧道统计 |
 | `GET`/`POST` | `/api/vpn/links` | 隧道列表 / 创建 |
 | `GET`/`PATCH`/`DELETE` | `/api/vpn/links/{id}` | 单条隧道 |

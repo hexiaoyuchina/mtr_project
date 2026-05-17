@@ -1,4 +1,7 @@
-"""现网 bgp-agent：写入 systemd 单元、重启并验收（deploy_light / 手工同步共用）。"""
+"""现网 bgp-agent：写入 systemd 单元、重启并验收（deploy_light / 手工同步共用）。
+
+RR 邻居不在 unit 里写死，由 OP BGP 管理页创建后调用 /api/rr/config。
+"""
 from __future__ import annotations
 
 import os
@@ -7,10 +10,8 @@ from typing import Dict, Mapping
 
 def bgp_agent_config_from_env() -> Dict[str, str]:
     return {
-        "rr_addr": os.environ.get("RR_ADDR", "139.159.43.249").strip(),
-        "rr_as": os.environ.get("RR_AS", "63199").strip(),
         "local_as": os.environ.get("LOCAL_AS", "63199").strip(),
-        "router_id": os.environ.get("ROUTER_ID", "101.89.68.109").strip(),
+        "router_id": os.environ.get("ROUTER_ID", "139.159.43.207").strip(),
         "redis_addr": os.environ.get("REDIS_ADDR", "localhost:6379").strip(),
         "rocksdb_path": os.environ.get("ROCKSDB_PATH", "/var/lib/bgp_agent/rocksdb").strip(),
         "api_addr": os.environ.get("API_ADDR", ":9179").strip(),
@@ -40,6 +41,7 @@ fi
 set -e
 {rebuild_block}
 mkdir -p {rocks}
+mkdir -p /var/lib/bgp_agent
 cat > /etc/systemd/system/bgp-agent.service <<'UNIT'
 [Unit]
 Description=BGP RX/TX Agent (GoBGP)
@@ -51,7 +53,6 @@ Type=simple
 WorkingDirectory={op_dir}/bgp_agent
 Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
 ExecStart={op_dir}/bgp_agent/bgp_agent \\
-  -rr {cfg["rr_addr"]} -rr-as {cfg["rr_as"]} \\
   -local-as {cfg["local_as"]} -router-id {cfg["router_id"]} \\
   -redis {cfg["redis_addr"]} -rocksdb {cfg["rocksdb_path"]} \\
   -api {cfg["api_addr"]}
@@ -67,7 +68,7 @@ systemctl daemon-reload
 systemctl enable bgp-agent 2>/dev/null || true
 systemctl restart bgp-agent
 sleep 3
-echo "bgp-agent unit: rr={cfg['rr_addr']} as={cfg['local_as']} rid={cfg['router_id']}"
+echo "bgp-agent unit: local-as={cfg['local_as']} rid={cfg['router_id']} (RR via OP)"
 systemctl is-active bgp-agent
 curl -sf http://127.0.0.1:9179/health && echo " bgp-agent health OK" || {{ echo "bgp-agent health FAIL"; exit 1; }}
 echo "bgp-agent status:"

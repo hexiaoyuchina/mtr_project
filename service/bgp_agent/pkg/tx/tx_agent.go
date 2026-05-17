@@ -30,6 +30,7 @@ type Route = storage.Route
 // TxAgent GoBGP TX Agent，只负责向下游通告路由
 type TxAgent struct {
 	config      *Config
+	listenPort  uint16
 	server      *server.BgpServer
 	storage     Storage
 	neighbors   map[string]*api.Peer
@@ -39,12 +40,16 @@ type TxAgent struct {
 }
 
 // NewTxAgent 创建TX Agent
-func NewTxAgent(config *Config, storage Storage) (*TxAgent, error) {
+func NewTxAgent(config *Config, storage Storage, listenPort uint16) (*TxAgent, error) {
+	if listenPort == 0 {
+		listenPort = 1790
+	}
 	return &TxAgent{
-		config:    config,
-		storage:   storage,
-		neighbors: make(map[string]*api.Peer),
-		frozen:    false,
+		config:     config,
+		listenPort: listenPort,
+		storage:    storage,
+		neighbors:  make(map[string]*api.Peer),
+		frozen:     false,
 	}, nil
 }
 
@@ -61,7 +66,7 @@ func (a *TxAgent) Start(ctx context.Context) error {
 		Global: &api.Global{
 			Asn:        a.config.LocalAS,
 			RouterId:   a.config.RouterID,
-			ListenPort: 1790, // 使用不同端口避免冲突
+			ListenPort: int32(a.listenPort),
 		},
 	}); err != nil {
 		return fmt.Errorf("启动BGP失败: %w", err)
@@ -72,14 +77,14 @@ func (a *TxAgent) Start(ctx context.Context) error {
 		log.Printf("恢复路由失败: %v", err)
 	}
 
-	log.Printf("TX Agent已启动: LocalAS=%d RouterID=%s",
-		a.config.LocalAS, a.config.RouterID)
+	log.Printf("TX Agent已启动: LocalAS=%d RouterID=%s port=%d",
+		a.config.LocalAS, a.config.RouterID, a.listenPort)
 
 	return nil
 }
 
-// AddNeighbor 添加下游邻居
-func (a *TxAgent) AddNeighbor(ctx context.Context, addr string, asn uint32) error {
+// AddNeighbor 添加下游邻居（可选本端源地址，对应原 FRR update-source）
+func (a *TxAgent) AddNeighbor(ctx context.Context, addr string, asn uint32, localAddress string, ebgpMultihop uint32, bindInterface string, passiveMode bool) error {
 	a.neighborsMu.Lock()
 	defer a.neighborsMu.Unlock()
 
@@ -100,15 +105,65 @@ func (a *TxAgent) AddNeighbor(ctx context.Context, addr string, asn uint32) erro
 			},
 		},
 	}
+	if localAddress != "" || bindInterface != "" || passiveMode {
+		peer.Transport = &api.Transport{
+			LocalAddress:  localAddress,
+			BindInterface: bindInterface,
+			PassiveMode:   passiveMode,
+		}
+	}
+	if ebgpMultihop > 0 {
+		peer.EbgpMultihop = &api.EbgpMultihop{Enabled: true, MultihopTtl: ebgpMultihop}
+	}
 
 	if err := a.server.AddPeer(ctx, &api.AddPeerRequest{Peer: peer}); err != nil {
 		return fmt.Errorf("添加邻居失败: %w", err)
 	}
 
 	a.neighbors[addr] = peer
-	log.Printf("TX Agent添加下游邻居: %s AS%d", addr, asn)
+	log.Printf("TX Agent添加下游邻居: %s AS%d local=%s", addr, asn, localAddress)
 
 	return nil
+}
+
+// SetNeighborEnabled 启停邻居（对应 FRR neighbor shutdown）
+func (a *TxAgent) SetNeighborEnabled(ctx context.Context, addr string, enabled bool) error {
+	_, err := a.server.UpdatePeer(ctx, &api.UpdatePeerRequest{
+		Peer: &api.Peer{
+			Conf: &api.PeerConf{
+				NeighborAddress: addr,
+				AdminDown:       !enabled,
+			},
+		},
+	})
+	return err
+}
+
+// ListPeers 列出本 TX 实例邻居及状态
+func (a *TxAgent) ListPeers(ctx context.Context) ([]PeerStatus, error) {
+	var out []PeerStatus
+	err := a.server.ListPeer(ctx, &api.ListPeerRequest{}, func(p *api.Peer) {
+		if p == nil || p.Conf == nil {
+			return
+		}
+		st := PeerStatus{
+			Address:  p.Conf.NeighborAddress,
+			RemoteAS: p.Conf.PeerAsn,
+			Session:  "tx",
+			State:    p.State.SessionState.String(),
+			Enabled:  p.State.AdminState == api.PeerState_UP,
+		}
+		if p.Transport != nil {
+			st.LocalAddress = p.Transport.LocalAddress
+		}
+		for _, af := range p.AfiSafis {
+			if af.State != nil {
+				st.PfxRcd += uint32(af.State.Received)
+			}
+		}
+		out = append(out, st)
+	})
+	return out, err
 }
 
 // RemoveNeighbor 删除下游邻居

@@ -1,251 +1,197 @@
-# BGP RX/TX分离架构 - 架构说明
+# BGP 双向中间人架构（最终版）
 
-## 背景问题
+本文描述 **现网最终形态**：GoBGP **RX/TX 分离** + OP（FastAPI + **SQLite**）实现 **双向学 / 存 / 冻 / 搬**。控制面以 **bgp-agent** 为准，**不再以 FRR 为 BGP 会话与 RIB 源**；Web/API 展示的学习路由 **只读 SQLite**，不实时查 Agent。
 
-传统FRR BGP架构的核心问题：
+网口与地址分工见 **[BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)**。表结构与 HTTP 接口见 **[BGP_DATA_AND_API.md](./BGP_DATA_AND_API.md)**。部署步骤见 **[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)**。
 
-```
-RR down → peer down → withdraw all → 下游路由全断
-```
+---
 
-这导致上游断连时，下游也会立即失去所有路由。
+## 1. 要解决的问题
 
-## 解决方案
-
-采用**RX/TX分离 + 路由持久化**架构，实现：
+传统单进程 BGP（含 FRR）常见行为：
 
 ```
-RR down ≠ withdraw
+RR 断链 → peer down → 全量 withdraw → 下游立刻丢路由
 ```
 
-关键是：**冻结当前RIB**，而不是撤销路由。
+本系统目标：
 
-## 架构设计
+| 场景 | 期望 |
+|------|------|
+| 上游 RR 断链 | **冻结** 已学路由；TX 继续向下游通告；**不**因 RR down 而撤销下游 |
+| 下游运营商断链 | 冻结该 peer 在库内的 **下游窗** 快照；恢复后再覆盖 |
+| 运维与交叉通告 | 以 **SQLite 定时快照** 为数据源，支持 `@upstream` / `@downstream` 全量搬运 |
 
-### 组件划分
+---
 
-```
-┌─────────────────────────────────────────┐
-│          GoBGP RX Agent                 │
-│  职责：从RR接收路由                      │
-│  不做：route-policy、kernel route、     │
-│       database、advertise               │
-└─────────────┬───────────────────────────┘
-              │ WatchEvent API
-              ▼
-┌─────────────────────────────────────────┐
-│       Route Processor (Go)              │
-│  职责：                                  │
-│  1. UPDATE去重                          │
-│  2. Best Path维护                       │
-│  3. 持久化（批量）                       │
-│  4. Freeze逻辑                          │
-└──────┬──────────────────────┬───────────┘
-       │                      │
-       │ Redis (热缓存)       │ RocksDB (持久化)
-       │                      │
-┌──────▼──────────────────────▼───────────┐
-│          Effective RIB                  │
-└──────┬──────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────┐
-│          GoBGP TX Agent                 │
-│  职责：向下游通告路由                    │
-│  特性：RR down时保持通告                │
-└─────────────────────────────────────────┘
-```
-
-### 关键机制
-
-#### 1. RX/TX分离
-
-**为什么必须分离？**
-
-FRR中：`peer down = withdraw all`
-
-我们需要：`RR down = freeze current RIB = TX继续通告`
-
-所以：**RX和TX必须是独立的进程/线程**
-
-#### 2. Freeze机制
-
-```go
-// RR连接状态变化
-func (p *Processor) SetRRConnected(connected bool) {
-    if !connected {
-        // RR断连 → 进入freeze
-        p.frozen = true
-        log.Println("进入freeze模式（保持当前RIB）")
-    } else {
-        // RR恢复 → 解除freeze
-        p.frozen = false
-        log.Println("解除freeze，接受路由更新")
-    }
-}
-
-// 处理路由更新
-func (p *Processor) HandleUpdate(...) {
-    if p.frozen {
-        // frozen状态：忽略更新
-        return nil
-    }
-    // 正常更新路由...
-}
-
-// TX通告
-func (a *TxAgent) AdvertiseRoute(...) {
-    if a.frozen {
-        // frozen状态：继续通告现有路由
-        // 不接受新路由，不撤销旧路由
-        return nil
-    }
-    // 正常通告...
-}
-```
-
-#### 3. 持久化策略
+## 2. 逻辑角色与物理路径
 
 ```
-更新路径：
-RX → Processor → Redis (同步) → 批量队列 → RocksDB (异步)
+                    ┌─────────────────┐
+                    │  RR（真上游）    │
+                    │ 139.159.43.249  │
+                    └────────┬────────┘
+                             │ 上游窗 · RX · 本端 207
+                             │ enp59s0f0np0
+                    ┌────────▼────────┐
+                    │  OP + bgp-agent │
+                    │ 207 / AS 63199  │
+                    │ SQLite 快照      │
+                    └────────┬────────┘
+                             │ 下游窗 · TX · 冒充 249 等
+                             │ eno1np0 + 卫星 VRF
+                    ┌────────▼────────┐
+                    │  运营商 / 对端   │
+                    │ 139.159.43.208  │
+                    └─────────────────┘
 
-查询路径：
-查询 → Redis (优先) → RocksDB (fallback)
-
-恢复路径：
-启动 → RocksDB → Redis + TX
+管理面：enp59s0f1np1 → 101.89.68.109:8808（不参与 BGP 数据面）
 ```
 
-**为什么Redis + RocksDB？**
+- **上游窗（upstream）**：与真 RR 的会话；本端 TCP 源 **207**；Agent **RX** 收全表；写入 SQLite `route_window=upstream`（VRF 多为 `gobgp-rr`）。
+- **下游窗（downstream）**：卫星 VRF（`vbgp*`）内以 **冒充 IP**（如 249）为 TCP 源连运营商；Agent **TX** 收 ADJ-IN；写入 `route_window=downstream`。
 
-- Redis：热缓存，读写快，支持百万级
-- RocksDB：持久化，重启恢复，LSM树适合BGP
+---
 
-#### 4. 批量写入优化
-
-```go
-// 批量写入队列
-pendingWrites chan *Route  // 缓冲10000条
-
-// 定时或满1000条刷盘
-for {
-    select {
-    case route := <-pendingWrites:
-        batch = append(batch, route)
-        if len(batch) >= 1000 {
-            flushBatch(batch)
-        }
-    case <-ticker.C:  // 每5秒
-        flushBatch(batch)
-    }
-}
-```
-
-避免单条写RocksDB导致性能瓶颈。
-
-## 性能指标
-
-### 百万级路由场景
-
-| 操作 | 耗时 | 说明 |
-|------|------|------|
-| 接收100万路由 | 约60秒 | RX接收 + Processor处理 |
-| 写入Redis | <1秒 | 批量pipeline |
-| 持久化RocksDB | 约120秒 | 批量写入，后台进行 |
-| 重启恢复 | 约90秒 | RocksDB → Redis + TX |
-| 通告100万路由 | 约60秒 | TX批量通告 |
-
-### 资源需求
-
-- **CPU**: 32核+ (RX/TX/Processor并行)
-- **内存**: 128GB+ (Redis 16GB + 进程80GB + 系统开销)
-- **磁盘**: 2TB NVMe (RocksDB + 备份)
-- **网络**: 10Gbps+ (百万路由通告)
-
-## 与FRR对比
-
-| 维度 | FRR | GoBGP RX/TX |
-|------|-----|-------------|
-| RR断连处理 | withdraw all | freeze RIB |
-| 下游影响 | 全断 | 无影响 |
-| 重启恢复 | 需重新学习 | 从RocksDB恢复 |
-| 百万路由 | 性能瓶颈 | 优化支持 |
-| 内存占用 | 较高 | 可控 |
-| 持久化 | 无 | Redis + RocksDB |
-
-## 技术选型理由
-
-### 为什么用GoBGP？
-
-1. **库模式可用**：可作为Go库集成
-2. **WatchEvent API**：实时监听路由变化
-3. **RX/TX独立**：容易分离
-4. **性能好**：Go语言，并发友好
-
-### 为什么不用BIRD/FRR？
-
-- BIRD：C语言，不易集成，无类似WatchEvent
-- FRR：peer down必然withdraw，难以实现freeze
-
-### 为什么用Redis + RocksDB？
-
-- **Redis**: 快，但重启丢数据
-- **RocksDB**: 持久化，但读写稍慢
-- **组合**: 取长补短，Redis做热缓存，RocksDB做冷备
-
-### 为什么不用MySQL？
-
-百万级随机UPDATE会把MySQL写穿，RocksDB的LSM树天生适合。
-
-## 关键代码位置
+## 3. 软件分层
 
 ```
-service/bgp_agent/
-├── pkg/
-│   ├── rx/          # RX Agent
-│   │   └── rx_agent.go
-│   ├── tx/          # TX Agent  
-│   │   └── tx_agent.go
-│   ├── processor/   # Route Processor
-│   │   └── processor.go
-│   └── storage/     # 存储层
-│       └── storage.go
-├── main.go          # 主程序入口
-└── api_server.go    # 管理API
-
-service/app/
-├── gobgp_client.py  # Python客户端
-└── main.py          # FastAPI集成
+┌──────────────────────────────────────────────────────────────┐
+│  Web UI (static/index.html)                                   │
+│  · BGP 管理：邻居 / 交叉通告 / freeze 状态                       │
+│  · 学习路由：上游/下游分窗 · 只读 SQLite                         │
+└────────────────────────────┬─────────────────────────────────┘
+                             │ HTTP :8808
+┌────────────────────────────▼─────────────────────────────────┐
+│  mtr-op (service/app)                                         │
+│  · main.py：REST API、后台 _bgp_rib_sync_loop                   │
+│  · bgp_bidirectional_sync：定时双向写库                         │
+│  · bgp_learned_routes_sync：上游 RR RIB → SQLite                │
+│  · bgp_control：调用 bgp-agent                                  │
+│  · storage.py：SQLite 表与 freeze / 通告来源解析                  │
+└────────────────────────────┬─────────────────────────────────┘
+                             │ HTTP :9179
+┌────────────────────────────▼─────────────────────────────────┐
+│  bgp-agent (service/bgp_agent)                                │
+│  RX Agent      → WatchEvent → Route Processor → Redis/RocksDB │
+│  TX Agent      → 按 VRF 向下游通告；peer down 时 VRF freeze     │
+│  RunPeerWatch  → RR/下游 Established 变化 → Freeze/Unfreeze   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## 未来优化
+**数据权威分工**
 
-1. **分片**: RX1接收peer1，RX2接收peer2
-2. **Best Path选择**: 当前简化为最新路由
-3. **路由策略**: 添加import/export policy
-4. **监控**: Prometheus metrics
-5. **备份**: RocksDB定期快照
+| 数据 | 运行时真相 | OP 展示 / 交叉通告 |
+|------|------------|-------------------|
+| 有效 RIB（上游） | Agent Processor + Redis/RocksDB | 定时同步 → `bgp_learned_routes` |
+| 下游 ADJ-IN | TX 池内存 | 定时 `GET /api/tx/learned-routes` → SQLite |
+| 邻居元数据、通告开关 | SQLite `bgp_neighbor_meta` | BGP 管理页 |
+| Freeze 位（库侧） | SQLite `bgp_peer_snapshot` | 学习路由页、同步时跳过覆盖 |
 
-## 总结
+Agent 内 **Redis + RocksDB** 用于百万级 RIB 与重启恢复；**业务界面与「路由通告」不以 Agent 实时 RIB 为准**，以 SQLite 快照为准。
 
-这是一个**生产级**的BGP高可用架构：
+---
 
-- ✅ RR断连不影响下游
-- ✅ 百万级路由支持
-- ✅ 重启快速恢复
-- ✅ 路由持久化
-- ✅ 性能优化
+## 4. 双向：学 / 存 / 冻 / 搬
 
-核心是**RX/TX分离 + Freeze机制 + 双层存储**。
+### 4.1 学（Learn）
 
-## 现网对接参数
+| 方向 | Agent 来源 | OP 同步模块 |
+|------|------------|-------------|
+| 上游 | `GET /api/routes`（RX 有效 RIB） | `bgp_learned_routes_sync.sync_bgp_learned_routes` |
+| 下游 | `GET /api/tx/learned-routes?vrf=` | `bgp_bidirectional_sync.sync_downstream_routes_for_vrf` |
+
+后台任务：`main._bgp_rib_sync_loop` → `sync_bidirectional_routes`（周期 **`MTR_BGP_RIB_SYNC_SEC`**，默认 60；**`MTR_BGP_RIB_SYNC=0`** 可关）。
+
+### 4.2 存（Store）
+
+- 按 **peer** 覆盖写入 `bgp_learned_routes`（`replace_bgp_learned_routes_for_peer`）。
+- 更新 `bgp_peer_snapshot`（条数、`last_sync_at`、`window_type`）。
+- 全局同步结果写入 `bgp_rib_sync_state`。
+- 上游前缀可选写入 `bgp_upstream_route_cache`（断链后合并展示 stale，见 `merge_upstream_stale`）。
+
+### 4.3 冻（Freeze）
+
+两层配合：
+
+1. **Agent**（`RunPeerWatch`，默认 15s，`MTR_BGP_PEER_WATCH_SEC`）  
+   - RR 非 Established → Processor 停收更新 + `txPool.FreezeAll()`  
+   - 某下游 VRF peer 非 Established → 该 VRF TX freeze，继续通告已有路由  
+
+2. **OP SQLite**（`bgp_peer_snapshot.frozen=1`）  
+   - 定时同步 **不覆盖** 该 peer 的 `bgp_learned_routes`  
+   - 学习路由 API 返回 `peer_frozen=true`  
+
+RR 删除时 Agent 侧 `FreezeAll`；OP 删邻居会清该 IP 相关学习行。
+
+### 4.4 搬（Cross-advertise）
+
+在 **BGP 管理** 行内「路由通告」：
+
+| 本行邻居角色 | 默认通告来源 `advertise_routes_from` | 含义 |
+|--------------|--------------------------------------|------|
+| RR | `@downstream` | 把 **下游窗** 学到的前缀通告给 RR（经 `POST /api/rr/routes`） |
+| 下游 | `@upstream` | 把 **上游窗** 学到的前缀通告给该下游（经 `POST /api/tx/routes`） |
+
+来源还可填 **具体邻居 IP**，或 UI datalist 中的 `@upstream` / `@downstream`。解析见 `storage.iter_bgp_routes_for_advertise_source`。
+
+新建邻居时若未填来源，`_default_advertise_routes_from` 写入 meta 默认值。
+
+---
+
+## 5. RX/TX 分离（Agent 内）
+
+```
+     RR ──iBGP──► RX Agent ──Watch──► Processor ──► Redis / RocksDB
+                                              │
+                                              ▼
+                                        Effective RIB
+                                              │
+     下游 ◄──iBGP── TX Agent ◄────────────────┘
+```
+
+**为何分离**：同一进程里 peer down 往往伴随 withdraw；RX 只收、TX 只发，才能在 RR down 时 **freeze 当前 RIB** 且 TX **继续通告**。
+
+关键代码：
+
+| 模块 | 路径 |
+|------|------|
+| RX | `service/bgp_agent/pkg/rx/` |
+| TX | `service/bgp_agent/pkg/tx/` |
+| Processor / Freeze | `service/bgp_agent/pkg/processor/` |
+| Peer Watch | `service/bgp_agent/api_bidirectional.go` |
+| HTTP | `service/bgp_agent/api_server.go` |
+
+---
+
+## 6. 与 MTR / 逐跳替换的关系
+
+BGP 中间人负责 **控制面路由学习与交叉通告**；转发面 ICMP/MTR **逐跳源地址替换** 由 `hop_replace_rules` + `te_rewrite_nfqueue`（及 nft）完成，二者正交。部署时注意 `MTR_TE_REWRITE_SCRIPT` 指向实际脚本路径（见 [部署.md](./部署.md)）。
+
+---
+
+## 7. 现网参数速查
 
 | 项 | 值 |
 |----|-----|
-| OP / Linux 200 主机 | `101.89.68.109` |
+| 管理 IP | `101.89.68.109`（`enp59s0f1np1`） |
+| Web | `http://101.89.68.109:8808/` |
+| bgp-agent API | `http://127.0.0.1:9179` |
 | `LOCAL_AS` | `63199` |
-| RR | `139.159.43.249`（AS `63199`） |
-| 下游（TX 通告对象） | `139.159.43.208` |
+| RR | `139.159.43.249` |
+| RX 本端 / Router ID | `139.159.43.207`（`enp59s0f0np0`） |
+| 下游示例 | `139.159.43.208`（卫星 VRF，`eno1np0`） |
 
-部署与日常发版见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)。
+---
+
+## 8. 关联文档
+
+| 文档 | 内容 |
+|------|------|
+| [BGP_DATA_AND_API.md](./BGP_DATA_AND_API.md) | SQLite 表字段、OP / Agent HTTP 接口 |
+| [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md) | 三网口分工与环境变量 |
+| [BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md) | 编译、systemd、验收 |
+| [BGP_ARP_SPOOF_MULTI_SESSION.md](./BGP_ARP_SPOOF_MULTI_SESSION.md) | ARP + 多 VRF 冒充（内核侧） |
+| [部署.md](./部署.md) | 日常发版 |
+
+实验室 `10.133.152.*` 拓扑见 [bgp-ipvlan-setup.md](./bgp-ipvlan-setup.md)，**勿直接套用到现网**。

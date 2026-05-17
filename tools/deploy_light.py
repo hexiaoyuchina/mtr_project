@@ -152,7 +152,11 @@ nft delete table inet mtr_spoof 2>/dev/null || true
 : > /tmp/mtr_op.log
 if [ -x ./venv/bin/uvicorn ]; then UV=./venv/bin/uvicorn; else UV='python3 -m uvicorn'; fi
 nohup $UV app.main:app --host 0.0.0.0 --port 8808 >> /tmp/mtr_op.log 2>&1 &
-sleep 3
+sleep 5
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  curl -sf http://127.0.0.1:8808/health >/dev/null && break
+  sleep 1
+done
 : > /tmp/mtr_spoof_nfqueue.log
 nohup $PY mtr_spoof_nfqueue.py --op-db {REMOTE}/data.db --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
 sleep 2

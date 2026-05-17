@@ -586,21 +586,21 @@
           <div class="page" data-page="bgp">
             <div class="card">
               <div class="hd">
-                <div class="h">BGP 邻居（Linux 200 / FRR）</div>
+                <div class="h">BGP 邻居（GoBGP Agent RX/TX）</div>
                 <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
                   <button type="button" class="btn" id="btnBgpRefresh">刷新</button>
-                  <button type="button" class="btn" id="btnBgpSyncMeta" title="把 FRR 中已有邻居写入本地库（仅缺行）">同步元数据</button>
+                  <button type="button" class="btn" id="btnBgpSyncMeta" title="从 bgp-agent 合并邻居到本地库并套用预设角色">同步元数据</button>
                   <label class="small" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none">
                     <input type="checkbox" id="bgpAutoRefresh" checked />
-                    自动刷新列表（每 15 秒，会多次调用 vtysh）
+                    自动刷新列表（每 15 秒，读 bgp-agent API）
                   </label>
                 </div>
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0; margin-bottom: 12px">
-                  下列表为<strong>本机全部 VRF</strong> 的邻居合并展示（无需选 VRF 刷新）。列与 FRR <span class="mono">show bgp vrf … summary</span> 一致：<span class="mono">Neighbor / V / AS / MsgRcvd / MsgSent / TblVer / InQ / OutQ / Up/Down / State(PfxRcd)</span>；另附 VRF、本端 AS、<strong>TCP 源</strong>（<span class="mono">update-source</span>，常与 ARP 引流「冒充网关 IPv4」一致）、角色、OP 开关。
-                  <strong>新增邻居</strong>：在下方 <strong>VRF</strong> 可从列表选或<strong>手输新名称</strong>（合法 Linux 接口名、≤15 字符）；若内核尚无该 VRF，保存时会自动 <span class="mono">ip link add … type vrf</span> 再建 <span class="mono">router bgp</span>。填 <strong>TCP 源</strong> 即对 Linux 201 的 <span class="mono">update-source</span>。改 AS 会删后重建；删除会从 FRR 移除邻居。
-                  <strong>FRR 约束</strong>：同一 VRF、同一 BGP 实例内，<strong>「邻居 IP」= 对端用于建 BGP 的 IPv4</strong>，每个地址<strong>只能一条</strong>会话；不能对<strong>同一邻居 IP</strong>仅靠改 TCP 源（update-source）拆成两条「新增」。<strong>多本机身份连同一对端 IP（如 201 仅 <span class="mono">10.133.152.204</span>）</strong>时：在 Linux 200 上为每条会话使用<strong>不同卫星 VRF</strong>（如 <span class="mono">vbgp250</span>），各 VRF 内各一条 <span class="mono">neighbor 10.133.152.204</span> + 各自 TCP 源；脚本见 <span class="mono">scripts/linux200_multi_vrf_bgp_one_peer.sh</span>。若对端有多个 BGP 地址，也可仍在<strong>同一 VRF</strong>内用不同「邻居 IP」区分。仅改本机源时用「编辑」改 TCP 源。说明：<span class="mono">docs/BGP_ARP_SPOOF_MULTI_SESSION.md</span>。
+                  下列表为<strong>本机全部 VRF</strong> 的邻居合并展示（数据来自 <span class="mono">bgp-agent</span> RX/TX + SQLite 元数据）。列含 VRF、对端 IP、AS、会话状态、前缀数、<strong>TCP 源</strong>（常与 ARP 引流「冒充网关 IPv4」一致）、角色、启停。
+                  <strong>双向搬运</strong>：上游窗（真 RR，本端 <span class="mono">207</span>）与下游窗（<span class="mono">vbgp*</span> 冒充身份）<strong>定时学路由入库</strong>；断链自动 <strong>freeze</strong> 保留快照。交叉通告：用「路由通告」选来源（<span class="mono">@upstream</span> / <span class="mono">@downstream</span> 或邻居 IP）向本行对端全量推送。
+                  <strong>RR</strong>：角色 RR，VRF 选 <span class="mono">gobgp-rr</span>（或角色 RR 时自动）。<strong>下游</strong>：先 ARP + 卫星 VRF，TCP 源为冒充 IP。网口：<span class="mono">docs/BGP_OP_NETWORK.md</span>。
                 </p>
                 <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end">
                   <div class="field" style="min-width: 280px">
@@ -611,11 +611,11 @@
                   </div>
                   <div class="field">
                     <label>邻居IP</label>
-                    <input id="bgpPeerIp" class="mono" placeholder="10.133.152.204" autocomplete="off" />
+                    <input id="bgpPeerIp" class="mono" placeholder="139.159.43.208" autocomplete="off" />
                   </div>
                   <div class="field">
                     <label>Remote AS</label>
-                    <input id="bgpPeerAs" type="number" placeholder="65201" style="width: 96px" />
+                    <input id="bgpPeerAs" type="number" placeholder="63199" style="width: 96px" />
                   </div>
                   <div class="field">
                     <label>角色</label>
@@ -629,16 +629,17 @@
                   </div>
                   <div class="field">
                     <label>TCP 源（BGP update-source）</label>
-                    <input id="bgpPeerSource" class="mono" list="bgpSourceIpList" placeholder="与 ARP 冒充网关一致，可空" autocomplete="off" style="min-width: 200px" />
+                    <input id="bgpPeerSource" class="mono" list="bgpSourceIpList" placeholder="RR 填 139.159.43.207；卫星填冒充网关 IP" autocomplete="off" style="min-width: 200px" />
                     <datalist id="bgpSourceIpList"></datalist>
+                    <datalist id="bgpAdvSourceList"></datalist>
                   </div>
                   <div class="field">
                     <label title="仅当所选 VRF 尚无 router bgp 时使用；省略则使用后端默认 AS 或 MTR_BGP_ENSURE_LOCAL_AS">建仓本端 AS（可选）</label>
-                    <input id="bgpEnsureAs" type="number" placeholder="65200" style="width: 96px" autocomplete="off" />
+                    <input id="bgpEnsureAs" type="number" placeholder="63199" style="width: 96px" autocomplete="off" />
                   </div>
                   <div class="field">
                     <label title="自动创建 router bgp 时写入">router-id（可选）</label>
-                    <input id="bgpEnsureRid" class="mono" placeholder="如 10.133.152.200" autocomplete="off" style="min-width: 140px" />
+                    <input id="bgpEnsureRid" class="mono" placeholder="139.159.43.207" autocomplete="off" style="min-width: 140px" />
                   </div>
                   <button type="button" class="btn primary" id="btnBgpAdd">新增邻居</button>
                 </div>
@@ -660,6 +661,8 @@
                       <th>角色</th>
                       <th>来源</th>
                       <th>状态</th>
+                      <th>Freeze</th>
+                      <th>库内路由</th>
                       <th>PfxRcd</th>
                       <th>Up/Down</th>
                       <th>开关</th>
@@ -676,21 +679,57 @@
           <div class="page" data-page="bgp-routes">
             <div class="card">
               <div class="hd">
-                <div class="h">BGP 学习路由（SQLite 快照；后台按 FRR RIB 刷新）</div>
+                <div class="h">BGP 学习路由（SQLite 双向快照）</div>
                 <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
                   <button type="button" class="btn" id="btnBrRefresh">刷新表格</button>
-                  <button type="button" class="btn primary" id="btnBrSync">从 FRR 同步入库</button>
+                  <button type="button" class="btn primary" id="btnBrSync">立即同步</button>
                   <label class="small" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none">
                     <input type="checkbox" id="brAutoRefresh" checked />
-                    本页自动刷新（20 秒，仅请求 OP 读 SQLite，不经 vtysh）
+                    本页自动刷新（20 秒，仅请求 OP 读 SQLite）
                   </label>
                 </div>
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0; margin-bottom: 10px">
-                  <strong>本页列表不是「直连 FRR 实时」</strong>：浏览器只调 OP 的 <span class="mono">GET /api/bgp/learned-routes</span>，读的是 Linux 200 上 SQLite 里<strong>最近一次成功写入</strong>的快照；本页勾选自动刷新时，也是每隔约 20 秒重新读库，与 FRR 是否变化无关，直至后台再次同步入库。末列<strong>数据来源</strong>标明该行来自哪张库表、与最近一次 RIB 后台同步是否成功（悬停可看说明）。
-                  后台在 OP 进程内<strong>定时</strong>（默认间隔由环境变量 <span class="mono">MTR_BGP_RIB_SYNC_SEC</span> 控制，未设置时约 60 秒）执行 <span class="mono">vtysh</span> 拉 IPv4 单播 RIB 并写库；BGP 恢复后会按该周期把新 RIB 刷进缓存表。若 <span class="mono">vtysh</span> 失败或（在「上游学习 VRF」上）<strong>由「BGP 管理」标注为上游的邻居</strong>未 Established 且 RIB 已空，则<strong>保留库内旧快照</strong>，避免断 BGP 后 OP 上被清空。上游身份以 SQLite 中该邻居角色为「上游运营商」为准（无录入时才看环境变量 <span class="mono">MTR_BGP_STICKY_UPSTREAM_NEIGHBOR</span>）。其它 VRF 在能读到 RIB 时仍按快照整表替换；角色 / 邻居与「BGP 管理」元数据对齐。学习 VRF 名默认 <span class="mono">vrf2103</span>，可用 <span class="mono">MTR_BGP_UPSTREAM_CACHE_VRF</span> 覆盖。
+                  <strong>本页只读 SQLite</strong>（<span class="mono">bgp_learned_routes</span>），由后台定时双向同步：上游窗（RR）与下游窗（<span class="mono">vbgp*</span>）。断链 peer 会 freeze，<strong>不删除</strong>库内已有前缀。
                 </p>
+                <div class="row" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px" id="brWindowTabs">
+                  <button type="button" class="btn primary" data-br-win="">全部</button>
+                  <button type="button" class="btn" data-br-win="upstream">上游窗 (RR)</button>
+                  <button type="button" class="btn" data-br-win="downstream">下游窗 (运营商)</button>
+                </div>
+                <div class="kpis" style="margin-bottom: 12px" id="brWindowKpis">
+                  <div class="kpi">
+                    <div class="k">上游窗</div>
+                    <div class="v mono" id="brKpiUpstream">—</div>
+                  </div>
+                  <div class="kpi">
+                    <div class="k">下游窗</div>
+                    <div class="v mono" id="brKpiDownstream">—</div>
+                  </div>
+                  <div class="kpi">
+                    <div class="k">合计</div>
+                    <div class="v mono" id="brKpiTotal">—</div>
+                  </div>
+                </div>
+                <details class="small" style="margin-bottom: 10px" id="brPeerSnapWrap">
+                  <summary>Peer 快照 / freeze</summary>
+                  <div class="br-table-scroll" style="max-height: 140px; margin-top: 8px">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>窗</th>
+                          <th>VRF</th>
+                          <th>邻居</th>
+                          <th>Freeze</th>
+                          <th>条数</th>
+                          <th>同步</th>
+                        </tr>
+                      </thead>
+                      <tbody id="brPeerSnapBody"></tbody>
+                    </table>
+                  </div>
+                </details>
                 <div class="row" style="flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 10px">
                   <div class="field" style="min-width: 140px">
                     <label class="small">VRF</label>
@@ -720,6 +759,7 @@
                   <table>
                     <thead>
                       <tr>
+                        <th>窗口</th>
                         <th>VRF</th>
                         <th>前缀</th>
                         <th>下一跳</th>
@@ -1165,6 +1205,7 @@
       let brRoutesBusy = false;
       let brCurrentPage = 1;
       let brTotalPages = 1;
+      let brActiveWindow = "";
 
       function stopBrRoutesPoll() {
         if (brRoutesPollTimer != null) {
@@ -1241,14 +1282,23 @@
         }
       }
 
+      function hijackEnabledFromApi(g) {
+        if (!g || typeof g !== "object") return false;
+        const v = g.hijack_enabled ?? g.hijackEnabled;
+        return v === true || v === 1 || v === "1";
+      }
+
+      function renderHijackSwitch(on) {
+        const tag = $("#tagHijack");
+        tag.className = `tag ${on ? "good" : "warn"}`;
+        tag.innerHTML = `<span class="dot"></span>${on ? "已开启" : "已关闭"}`;
+        $("#btnToggleHijack").textContent = on ? "关闭" : "开启";
+      }
+
       async function loadGlobal() {
         try {
           const g = await apiFetch("/api/global");
-          const on = !!(g && (g.hijack_enabled ?? g.hijackEnabled));
-          const tag = $("#tagHijack");
-          tag.className = `tag ${on ? "good" : "warn"}`;
-          tag.innerHTML = `<span class="dot"></span>${on ? "已开启" : "已关闭"}`;
-          $("#btnToggleHijack").textContent = on ? "关闭" : "开启";
+          renderHijackSwitch(hijackEnabledFromApi(g));
         } catch {
           $("#tagHijack").className = "tag warn";
           $("#tagHijack").innerHTML = '<span class="dot"></span>未知';
@@ -1260,16 +1310,18 @@
         const btn = $("#btnToggleHijack");
         btn.disabled = true;
         try {
-          const cur = await apiFetch("/api/global").catch(() => ({}));
-          const on = !!(cur && (cur.hijack_enabled ?? cur.hijackEnabled));
-          await apiFetch("/api/global", {
+          const cur = await apiFetch("/api/global");
+          const wasOn = hijackEnabledFromApi(cur);
+          const nextOn = !wasOn;
+          const g = await apiFetch("/api/global", {
             method: "PUT",
-            body: JSON.stringify({ hijack_enabled: !on }),
+            body: JSON.stringify({ hijack_enabled: nextOn }),
           });
-          toast(`MTR/ICMP 逐跳替换已${!on ? "开启" : "关闭"}`);
-          await loadGlobal();
+          const appliedOn = hijackEnabledFromApi(g);
+          renderHijackSwitch(appliedOn);
+          toast(`MTR/ICMP 逐跳替换已${appliedOn ? "开启" : "关闭"}`);
         } catch {
-          toast("切换失败（后端未实现或不可达）");
+          toast("切换失败（nft 下发失败或 API 不可达）");
           await loadGlobal();
         } finally {
           btn.disabled = false;
@@ -1281,8 +1333,8 @@
         $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === name));
         const meta = {
           dash: ["总览", "功能开关、服务状态与规则统计"],
-          bgp: ["BGP 管理", "Linux 200 / FRR：邻居新增、启停与状态（vtysh）"],
-          "bgp-routes": ["BGP 学习路由", "SQLite 快照；可按 VRF / 来源邻居 IP 筛选；后台定时 vtysh 写库"],
+          bgp: ["BGP 管理", "GoBGP Agent：邻居新增、启停与会话状态"],
+          "bgp-routes": ["BGP 学习路由", "SQLite 双向快照；上游/下游分窗；可按 VRF、邻居 IP 筛选"],
           rules: ["逐跳替换规则", "目的 IP 由客户端 Echo 自动发现；探测命中 CIDR 则伪造 ICMP TE"],
           gateway: ["ARP 引流", "配置接口与冒充网关 IPv4（二层 ARP，独立 NFQUEUE）"],
           vpn: ["VPN 出口", "GRE / OpenVPN / L2TP 隧道进 vrf2103；策略路由与下发"],
@@ -1333,7 +1385,7 @@
         try {
           const j = await apiFetch("/api/bgp/sync-from-frr", { method: "POST" });
           const extra = Array.isArray(j?.presets_applied) && j.presets_applied.length ? `（${j.presets_applied.join("，")}）` : "";
-          toast(`已从 FRR 合并邻居并写入角色${extra}`);
+          toast(`已从 bgp-agent 合并邻居并写入角色${extra}`);
           await refreshBGP();
         } catch (e) {
           toast(`同步失败：${String(e).slice(0, 100)}`);
@@ -1353,6 +1405,16 @@
       $("#brFilterVrf")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
       $("#brFilterNeighbor")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
       $("#brPageSize")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
+      document.querySelectorAll("#brWindowTabs [data-br-win]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          brActiveWindow = btn.getAttribute("data-br-win") || "";
+          document.querySelectorAll("#brWindowTabs [data-br-win]").forEach((b) => {
+            b.classList.toggle("primary", (b.getAttribute("data-br-win") || "") === brActiveWindow);
+          });
+          brCurrentPage = 1;
+          loadLearnedRoutes();
+        });
+      });
       $("#brPageFirst")?.addEventListener("click", brGoFirst);
       $("#brPagePrev")?.addEventListener("click", brGoPrev);
       $("#brPageNext")?.addEventListener("click", brGoNext);
@@ -1363,7 +1425,7 @@
         if (b) b.disabled = true;
         try {
           await apiFetch("/api/bgp/learned-routes/sync", { method: "POST" });
-          toast("已从 FRR 同步到数据库");
+          toast("已从 bgp-agent 同步到数据库");
           await loadLearnedRouteFilters();
           await loadLearnedRoutes();
         } catch (e) {
@@ -1385,13 +1447,55 @@
         return tag("warn", "未知");
       }
 
+      function brRouteWindowTag(win) {
+        const w = String(win || "upstream").toLowerCase();
+        if (w === "downstream") return tag("good", "下游");
+        return tag("warn", "上游");
+      }
+
+      function renderBrSummary(summary) {
+        const s = summary && typeof summary === "object" ? summary : {};
+        const up = Number(s.upstream ?? 0);
+        const dn = Number(s.downstream ?? 0);
+        const tot = Number(s.total ?? up + dn);
+        const u = $("#brKpiUpstream");
+        const d = $("#brKpiDownstream");
+        const t = $("#brKpiTotal");
+        if (u) u.textContent = String(up);
+        if (d) d.textContent = String(dn);
+        if (t) t.textContent = String(tot);
+      }
+
+      function renderBrPeerSnapshots(snaps) {
+        const tbody = $("#brPeerSnapBody");
+        if (!tbody) return;
+        const rows = Array.isArray(snaps) ? snaps : [];
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="small">暂无 peer 快照（等待定时同步）</td></tr>';
+          return;
+        }
+        tbody.innerHTML = "";
+        rows.forEach((p) => {
+          const tr = document.createElement("tr");
+          const win = String(p.window_type || "");
+          tr.innerHTML = `
+            <td>${brRouteWindowTag(win)}</td>
+            <td class="mono">${p.vrf || "—"}</td>
+            <td class="mono">${p.neighbor_ip || "—"}</td>
+            <td>${p.frozen ? '<span class="tag warn">冻</span>' : '<span class="tag good">活</span>'}</td>
+            <td class="mono">${Number(p.route_count ?? 0)}</td>
+            <td class="small">${p.last_sync_at || "—"}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
       function bgpRoleSrcLabel(rs) {
         if (rs === "manual") return tag("good", "手动");
         if (rs === "hint") return tag("warn", "默认映射");
         return tag("warn", "—");
       }
 
-      const BGP_IPVLAN_PEER_IP = "10.133.152.204";
       const BGP_IPVLAN_REMOTE_AS = 65201;
       const BGP_IPVLAN_LOCAL_AS = 65200;
 
@@ -1413,7 +1517,6 @@
         }
         showPage("bgp");
         $("#bgpVrf").value = vrf;
-        $("#bgpPeerIp").value = BGP_IPVLAN_PEER_IP;
         $("#bgpPeerAs").value = String(BGP_IPVLAN_REMOTE_AS);
         $("#bgpPeerRole").value = "downstream";
         $("#bgpPeerSource").value = ip;
@@ -1423,10 +1526,15 @@
       }
 
       async function addBgpNeighborForArp(ip, vrf) {
+        const neighbor_ip = ($("#bgpPeerIp").value || "").trim();
+        if (!neighbor_ip) {
+          throw new Error("请先在 BGP 管理填写「邻居IP」（下游对端）");
+        }
+        const remote_as = Number($("#bgpPeerAs").value || 0) || BGP_IPVLAN_REMOTE_AS;
         const payload = {
           vrf,
-          neighbor_ip: BGP_IPVLAN_PEER_IP,
-          remote_as: BGP_IPVLAN_REMOTE_AS,
+          neighbor_ip,
+          remote_as,
           role: "downstream",
           bgp_local_as: BGP_IPVLAN_LOCAL_AS,
           bgp_router_id: ip,
@@ -1454,6 +1562,7 @@
         const ps = Number($("#brPageSize")?.value || 100);
         if (vf) qs.set("vrf", vf);
         if (nip) qs.set("neighbor_ip", nip);
+        if (brActiveWindow) qs.set("route_window", brActiveWindow);
         qs.set("page", String(brCurrentPage));
         qs.set("page_size", String(ps));
         const s = qs.toString();
@@ -1486,6 +1595,8 @@
           });
           if ([...vs.options].some((op) => op.value === vPrev)) vs.value = vPrev;
           if ([...ns.options].some((op) => op.value === nPrev)) ns.value = nPrev;
+          renderBrSummary(j.summary);
+          renderBrPeerSnapshots(j.peer_snapshots);
         } catch {
           /* 保留「全部」 */
         }
@@ -1525,6 +1636,8 @@
             const err = (j.last_sync_error || "").trim();
             meta.textContent = `上次同步: ${j.last_sync_at || "—"} · ${ok ? "成功" : "失败"}${err ? " · " + err.slice(0, 160) : ""}`;
           }
+          renderBrSummary(j.summary);
+          renderBrPeerSnapshots(j.peer_snapshots);
           const routes = Array.isArray(j.routes) ? j.routes : [];
           const total = Number(j.total || 0);
           const page = Number(j.page || 1);
@@ -1532,13 +1645,16 @@
           brCurrentPage = page;
           brTotalPages = Math.ceil(total / pageSize);
           routes.sort((a, b) => {
+            const w = String(a.route_window || "").localeCompare(String(b.route_window || ""));
+            if (w !== 0) return w;
             const c = String(a.vrf || "").localeCompare(String(b.vrf || ""));
             return c !== 0 ? c : String(a.prefix || "").localeCompare(String(b.prefix || ""));
           });
           tbody.innerHTML = "";
           if (!routes.length) {
+            const winHint = brActiveWindow === "upstream" ? "上游窗" : brActiveWindow === "downstream" ? "下游窗" : "";
             tbody.innerHTML =
-              '<tr><td colspan="10" class="small">暂无数据：等待后台定时写入 SQLite，或点「从 FRR 同步入库」。</td></tr>';
+              `<tr><td colspan="11" class="small">暂无${winHint ? winHint + " " : ""}数据：等待后台定时写入 SQLite，或点「立即同步」。</td></tr>`;
             updatePaginationUI();
             return;
           }
@@ -1547,12 +1663,17 @@
             const rawPath = String(r.as_path || "");
             const ap = rawPath.length > 64 ? rawPath.slice(0, 64) + "…" : rawPath;
             const esc = rawPath.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+            const nip = r.neighbor_ip || "—";
+            const nipCell = r.peer_frozen
+              ? `<span class="mono">${nip}</span> <span class="tag warn" title="peer 已 freeze，定时同步不覆盖">冻</span>`
+              : `<span class="mono">${nip}</span>`;
             tr.innerHTML = `
+            <td>${brRouteWindowTag(r.route_window)}</td>
             <td class="mono">${r.vrf}</td>
             <td class="mono">${r.prefix}</td>
             <td class="mono">${r.nexthop || "—"}</td>
             <td>${bgpRoleTag(r.role)}</td>
-            <td class="mono">${r.neighbor_ip || "—"}</td>
+            <td>${nipCell}</td>
             <td class="mono">${Number(r.remote_as || 0)}</td>
             <td class="mono small" title="${esc}">${ap.replace(/</g, "&lt;")}</td>
             <td class="small">${r.updated_at || "—"}</td>
@@ -1563,7 +1684,7 @@
           });
           updatePaginationUI(total);
         } catch (e) {
-          tbody.innerHTML = `<tr><td colspan="10" class="small">加载失败：${String(e.message || e).slice(0, 220)}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="11" class="small">加载失败：${String(e.message || e).slice(0, 220)}</td></tr>`;
           updatePaginationUI(0);
         }
       }
@@ -1595,6 +1716,7 @@
 
       async function loadBgpSourceHints() {
         const dl = $("#bgpSourceIpList");
+        const advDl = $("#bgpAdvSourceList");
         if (!dl) return;
         try {
           const j = await apiFetch("/api/bgp/neighbor-form-hints");
@@ -1605,6 +1727,30 @@
             o.value = String(ip);
             dl.appendChild(o);
           });
+          if (advDl) {
+            advDl.innerHTML = "";
+            const opts = Array.isArray(j?.advertise_source_options)
+              ? j.advertise_source_options
+              : ["@upstream", "@downstream"];
+            opts.forEach((s) => {
+              const o = document.createElement("option");
+              o.value = String(s);
+              advDl.appendChild(o);
+            });
+          }
+          if (j?.local_as) {
+            const las = Number(j.local_as);
+            if ($("#bgpEnsureAs") && !$("#bgpEnsureAs").value) $("#bgpEnsureAs").value = String(las);
+            if ($("#bgpPeerAs") && !$("#bgpPeerAs").value) $("#bgpPeerAs").value = String(las);
+          }
+          if (j?.router_id) {
+            const rid = String(j.router_id);
+            if ($("#bgpEnsureRid") && !$("#bgpEnsureRid").value) $("#bgpEnsureRid").value = rid;
+            if ($("#bgpPeerSource") && !$("#bgpPeerSource").value) $("#bgpPeerSource").value = rid;
+          }
+          if (j?.downstream_neighbor_ip && $("#bgpPeerIp") && !$("#bgpPeerIp").value) {
+            $("#bgpPeerIp").value = String(j.downstream_neighbor_ip);
+          }
         } catch {
           /* 忽略：ARP 页未配置或旧后端 */
         }
@@ -1664,7 +1810,7 @@
       }
 
       async function deleteBgpNeighbor(r) {
-        if (!confirm(`确定从 FRR 删除邻居 ${r.neighbor_ip} ？`)) return;
+        if (!confirm(`确定删除邻居 ${r.neighbor_ip} ？`)) return;
         try {
           await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}`, {
             method: "DELETE",
@@ -1734,16 +1880,22 @@
         const inp = $("#bgpVrf");
         if (!inp) return;
         try {
-          // 只获取 ARP 引流条目中配置的 satellite_vrf
-          const satelliteVrfs = await apiFetch("/api/bgp/satellite-vrfs").catch(() => ({ vrfs: [] }));
+          const [vrfsApi, satelliteVrfs] = await Promise.all([
+            apiFetch("/api/bgp/vrfs").catch(() => []),
+            apiFetch("/api/bgp/satellite-vrfs").catch(() => ({ vrfs: [] })),
+          ]);
           const fallbackAs = 63199;
-          _bgpVrfListCache = (satelliteVrfs?.vrfs || [])
-            .filter(v => v.startsWith('vbgp'))
-            .map(v => ({
-              vrf: v,
-              local_as: fallbackAs,
-              has_router_bgp: false
-            }));
+          const seen = new Set();
+          _bgpVrfListCache = [];
+          const pushVrf = (name, hasBgp) => {
+            const v = String(name || "").trim();
+            if (!v || seen.has(v)) return;
+            seen.add(v);
+            _bgpVrfListCache.push({ vrf: v, local_as: fallbackAs, has_router_bgp: !!hasBgp });
+          };
+          (Array.isArray(vrfsApi) ? vrfsApi : []).forEach((x) => pushVrf(x.vrf, x.has_router_bgp));
+          (satelliteVrfs?.vrfs || []).filter((v) => String(v).startsWith("vbgp")).forEach((v) => pushVrf(v, false));
+          pushVrf("gobgp-rr", true);
           
           await loadBgpSourceHints();
           const cur = (inp.value || "").trim();
@@ -1763,7 +1915,7 @@
           tbody.innerHTML = "";
           if (!Array.isArray(rows) || rows.length === 0) {
             tbody.innerHTML =
-              '<tr><td colspan="19" class="small">暂无邻居：请检查 FRR / vtysh；若需添加，在下方选择「新增所在 VRF」后点新增。</td></tr>';
+              '<tr><td colspan="21" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
             return;
           }
           rows.forEach((r) => {
@@ -1785,6 +1937,8 @@
             <td>${bgpRoleTag(r.role)}</td>
             <td>${bgpRoleSrcLabel(r.role_source)}</td>
             <td>${bgpStateTag(r.session_state, r.enabled)}</td>
+            <td>${r.peer_frozen ? '<span class="tag warn">冻</span>' : '<span class="tag good">活</span>'}</td>
+            <td class="mono">${Number(r.routes_cached ?? 0)}</td>
             <td class="mono">${Number(r.pfx_rcd || 0)}</td>
             <td class="mono">${r.up_down || "—"}</td>
             <td>
@@ -1800,7 +1954,7 @@
                   <input type="checkbox" class="adv-sw" ${advEnabled ? "checked" : ""} />
                   <span class="track"><span class="knob"></span></span>
                 </label>
-                <input type="text" class="mono adv-from" value="${advFrom}" placeholder="来源邻居IP" style="width: 110px; font-size: 11px" ${advEnabled ? "" : "disabled"} />
+                <input type="text" class="mono adv-from" value="${advFrom}" list="bgpAdvSourceList" placeholder="@upstream / @downstream" style="width: 120px; font-size: 11px" ${advEnabled ? "" : "disabled"} />
                 <button type="button" class="btn adv-apply" ${advEnabled && advFrom ? "" : "disabled"}>应用</button>
               </div>
             </td>
@@ -1822,7 +1976,7 @@
                   body: JSON.stringify({ enabled: want }),
                 });
                 if (cap) cap.textContent = want ? "开启" : "关闭";
-                toast(want ? "已开启邻居（已下发 FRR）" : "已关闭邻居（已下发 FRR）");
+                toast(want ? "已开启邻居（已下发 bgp-agent）" : "已关闭邻居（已下发 bgp-agent）");
                 await refreshBGP();
               } catch (e) {
                 sw.checked = !want;
@@ -1872,7 +2026,11 @@
                     advertise_routes_from: fromIp
                   }),
                 });
-                toast(`路由通告已${wantAdv ? "启用" : "禁用"}，将从 ${fromIp} 学习路由`);
+                const dir =
+                  r.vrf === "gobgp-rr" || r.role === "rr"
+                    ? "→ RR(RX)"
+                    : `→ ${r.vrf}(TX)`;
+                toast(`路由通告已${wantAdv ? "启用" : "禁用"}：${fromIp} ${dir}`);
                 
                 if (wantAdv) {
                   advApply.textContent = "处理中...";
@@ -1936,21 +2094,23 @@
         } catch (e) {
           const tbody = $("#bgpBody");
           if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="18" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="21" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
           }
           toast(`BGP 列表加载失败：${String(e.message || e).slice(0, 80)}`);
         }
       }
 
       async function addBgpNeighbor() {
-        const vrf = ($("#bgpVrf").value || "").trim();
-        if (!vrf) {
-          toast("请填写或选择 VRF 名称");
+        const role = ($("#bgpPeerRole").value || "unknown").trim();
+        let vrf = ($("#bgpVrf").value || "").trim();
+        if (role === "rr") {
+          vrf = "gobgp-rr";
+        } else if (!vrf) {
+          toast("请选择卫星 VRF（下游）或角色 RR");
           return;
         }
         const neighbor_ip = ($("#bgpPeerIp").value || "").trim();
         const remote_as = Number($("#bgpPeerAs").value || 0);
-        const role = ($("#bgpPeerRole").value || "unknown").trim();
         if (!neighbor_ip || !remote_as) {
           toast("请输入邻居IP与 Remote AS");
           return;

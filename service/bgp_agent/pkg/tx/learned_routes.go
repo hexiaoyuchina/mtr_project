@@ -1,0 +1,45 @@
+package tx
+
+import (
+	"context"
+
+	"bgp_agent/pkg/gobgp_path"
+
+	api "github.com/osrg/gobgp/v3/api"
+)
+
+// LearnedRoute 从下游 ADJ-IN 学到的路由。
+type LearnedRoute struct {
+	Prefix   string `json:"prefix"`
+	Nexthop  string `json:"nexthop"`
+	ASPath   string `json:"as_path"`
+	Neighbor string `json:"neighbor"`
+}
+
+// ListAdjInRoutes 列出指定邻居在 ADJ-IN 中的 IPv4 单播路由。
+func (a *TxAgent) ListAdjInRoutes(ctx context.Context, neighbor string) ([]LearnedRoute, error) {
+	if a.server == nil {
+		return nil, nil
+	}
+	var out []LearnedRoute
+	err := a.server.ListPath(ctx, &api.ListPathRequest{
+		TableType: api.TableType_ADJ_IN,
+		Family: &api.Family{
+			Afi:  api.Family_AFI_IP,
+			Safi: api.Family_SAFI_UNICAST,
+		},
+		Name: neighbor,
+	}, func(p *api.Path) {
+		pfx, nh, asp, ok := gobgp_path.ParseIPv4Unicast(p)
+		if !ok {
+			return
+		}
+		out = append(out, LearnedRoute{
+			Prefix:   pfx,
+			Nexthop:  nh,
+			ASPath:   asp,
+			Neighbor: neighbor,
+		})
+	})
+	return out, err
+}

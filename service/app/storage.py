@@ -294,6 +294,27 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS bgp_peer_snapshot (
+          vrf TEXT NOT NULL,
+          neighbor_ip TEXT NOT NULL,
+          window_type TEXT NOT NULL DEFAULT 'upstream',
+          frozen INTEGER NOT NULL DEFAULT 0,
+          session_established INTEGER NOT NULL DEFAULT 0,
+          route_count INTEGER NOT NULL DEFAULT 0,
+          last_sync_at TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (vrf, neighbor_ip)
+        );
+        """
+    )
+    try:
+        conn.execute(
+            "ALTER TABLE bgp_learned_routes ADD COLUMN route_window TEXT NOT NULL DEFAULT 'upstream'"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS vpn_links (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL UNIQUE,
@@ -365,13 +386,76 @@ def get_global(conn: sqlite3.Connection) -> GlobalRow:
 def get_global_config(conn: sqlite3.Connection) -> GlobalRow:
     row = conn.execute("SELECT hijack_enabled FROM global_config WHERE id = 1").fetchone()
     if row:
-        return GlobalRow(hijack_enabled=bool(row["hijack_enabled"]))
+        return GlobalRow(hijack_enabled=int(row["hijack_enabled"]) != 0)
     return GlobalRow(hijack_enabled=False)
 
 
 def set_global_hijack_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
     conn.execute("UPDATE global_config SET hijack_enabled = ? WHERE id = 1", (1 if enabled else 0,))
     conn.commit()
+
+
+def set_global(conn: sqlite3.Connection, enabled: bool) -> None:
+    """写入 MTR/ICMP 逐跳替换总开关（``api_global_put`` 使用）。"""
+    set_global_hijack_enabled(conn, enabled)
+
+
+def _hop_rule_row_dict(conn: sqlite3.Connection, rule_id: int) -> Optional[Dict[str, Any]]:
+    row = get_hop_replace_rule(conn, rule_id)
+    if not row:
+        return None
+    return {
+        "id": row.id,
+        "match_cidr": row.match_cidr,
+        "forged_src": row.forged_src,
+        "priority": row.priority,
+        "enabled": row.enabled,
+        "note": row.note,
+        "created_at": row.created_at,
+    }
+
+
+def add_hop_rule(
+    conn: sqlite3.Connection,
+    match_cidr: str,
+    forged_src: str,
+    priority: int = 0,
+    enabled: bool = True,
+    note: str = "",
+) -> Dict[str, Any]:
+    rid = insert_hop_replace_rule(conn, match_cidr, forged_src, priority, enabled, note)
+    out = _hop_rule_row_dict(conn, int(rid))
+    if not out:
+        raise ValueError("hop_rule_insert_failed")
+    return out
+
+
+def update_hop_rule(
+    conn: sqlite3.Connection,
+    rule_id: int,
+    match_cidr: Optional[str] = None,
+    forged_src: Optional[str] = None,
+    priority: Optional[int] = None,
+    enabled: Optional[bool] = None,
+    note: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    ok = update_hop_replace_rule(conn, rule_id, match_cidr, forged_src, priority, enabled, note)
+    if not ok:
+        return None
+    return _hop_rule_row_dict(conn, rule_id)
+
+
+def delete_hop_rule(conn: sqlite3.Connection, rule_id: int) -> bool:
+    return delete_hop_replace_rule(conn, rule_id)
+
+
+def set_arp_spoof_settings(conn: sqlite3.Connection, arp_spoof_enabled: bool) -> ArpSpoofSettings:
+    set_arp_spoof_enabled(conn, arp_spoof_enabled)
+    return get_arp_spoof_settings(conn)
+
+
+def list_bgp_distinct_learned_vrfs(conn: sqlite3.Connection) -> List[str]:
+    return list_bgp_learned_routes_vrfs(conn)
 
 
 # === Hop Replace Rules ===
@@ -759,6 +843,29 @@ def delete_gateway_reply_policy(conn: sqlite3.Connection, policy_id: int) -> boo
 
 # === BGP Neighbor Meta ===
 
+def downstream_neighbor_ip_for_vrf(conn: sqlite3.Connection, vrf: str) -> Optional[str]:
+    """卫星 VRF 内在 BGP 管理配置的下游邻居 IP（用于 ipvlan 收敛写 VRF 路由）。"""
+    v = validate_vrf_name(vrf)
+    meta = get_bgp_neighbor_meta_map(conn, v)
+    if not meta:
+        return None
+    downstream: List[str] = []
+    other: List[str] = []
+    for nip, tup in meta.items():
+        role = (tup[0] or "").strip().lower() if tup else ""
+        if role in {"downstream", "upstream"}:
+            if role == "downstream":
+                downstream.append(nip)
+            else:
+                other.append(nip)
+        else:
+            other.append(nip)
+    pick = downstream[0] if downstream else (other[0] if len(other) == 1 else None)
+    if pick:
+        return validate_ipv4(pick)
+    return None
+
+
 def get_bgp_neighbor_meta_map(conn: sqlite3.Connection, vrf: str) -> Dict[str, tuple]:
     """返回 {neighbor_ip: (role, note, source_ip, advertise_routes, advertise_routes_from)}。"""
     v = validate_vrf_name(vrf)
@@ -943,6 +1050,8 @@ def bgp_neighbor_meta_role_map_from_env() -> Dict[str, str]:
     raw = (os.environ.get("MTR_BGP_ROLE_MAP") or "").strip()
     if not raw:
         raw = (
+            "139.159.43.249:rr,"
+            "139.159.43.208:downstream,"
             "10.133.153.204:upstream,"
             "10.133.151.204:downstream,"
             "10.133.152.204:downstream,"
@@ -992,7 +1101,9 @@ def parse_bgp_db_presets_from_env() -> List[tuple[str, str, str]]:
     """
     raw = (os.environ.get("MTR_BGP_DB_PRESETS") or "").strip()
     if not raw:
+        # RR 不在此预设：须由 OP「BGP 管理」手工创建（角色 RR）
         raw = (
+            "gobgp-tx:139.159.43.208:downstream,"
             "vrf2103:10.133.153.204:upstream,"
             "default:10.133.152.204:downstream,"
             "vrf2102:10.133.152.204:downstream"
@@ -1068,6 +1179,172 @@ def build_upstream_cache_rows(
     return out
 
 
+# === BGP Peer snapshot / bidirectional ===
+
+def set_bgp_peer_frozen(
+    conn: sqlite3.Connection, vrf: str, neighbor_ip: str, window_type: str, frozen: bool
+) -> None:
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    wt = (window_type or "upstream").strip().lower()
+    conn.execute(
+        """
+        INSERT INTO bgp_peer_snapshot (vrf, neighbor_ip, window_type, frozen, last_sync_at)
+        VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        ON CONFLICT(vrf, neighbor_ip) DO UPDATE SET
+          window_type=excluded.window_type,
+          frozen=excluded.frozen,
+          last_sync_at=excluded.last_sync_at
+        """,
+        (v, nip, wt, 1 if frozen else 0),
+    )
+    conn.commit()
+
+
+def is_bgp_peer_frozen(conn: sqlite3.Connection, vrf: str, neighbor_ip: str) -> bool:
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    row = conn.execute(
+        "SELECT frozen FROM bgp_peer_snapshot WHERE vrf = ? AND neighbor_ip = ?",
+        (v, nip),
+    ).fetchone()
+    if not row:
+        return False
+    return int(row["frozen"]) != 0
+
+
+def touch_bgp_peer_snapshot(
+    conn: sqlite3.Connection,
+    vrf: str,
+    neighbor_ip: str,
+    window_type: str,
+    *,
+    route_count: int = 0,
+    session_established: Optional[bool] = None,
+) -> None:
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    wt = (window_type or "upstream").strip().lower()
+    se = None if session_established is None else (1 if session_established else 0)
+    if se is None:
+        conn.execute(
+            """
+            INSERT INTO bgp_peer_snapshot (vrf, neighbor_ip, window_type, route_count, last_sync_at)
+            VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(vrf, neighbor_ip) DO UPDATE SET
+              route_count=excluded.route_count,
+              last_sync_at=excluded.last_sync_at
+            """,
+            (v, nip, wt, int(route_count)),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO bgp_peer_snapshot (vrf, neighbor_ip, window_type, route_count, session_established, last_sync_at)
+            VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(vrf, neighbor_ip) DO UPDATE SET
+              route_count=excluded.route_count,
+              session_established=excluded.session_established,
+              last_sync_at=excluded.last_sync_at
+            """,
+            (v, nip, wt, int(route_count), se),
+        )
+    conn.commit()
+
+
+def get_bgp_peer_frozen_map(conn: sqlite3.Connection) -> Dict[tuple, bool]:
+    out: Dict[tuple, bool] = {}
+    for row in conn.execute("SELECT vrf, neighbor_ip, frozen FROM bgp_peer_snapshot"):
+        out[(str(row["vrf"]), str(row["neighbor_ip"]))] = int(row["frozen"]) != 0
+    return out
+
+
+def count_routes_for_peer(conn: sqlite3.Connection, vrf: str, neighbor_ip: str) -> int:
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM bgp_learned_routes WHERE vrf = ? AND neighbor_ip = ?",
+        (v, nip),
+    ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def replace_bgp_learned_routes_for_peer(
+    conn: sqlite3.Connection,
+    vrf: str,
+    neighbor_ip: str,
+    rows: List[tuple],
+) -> None:
+    """按 peer 覆盖快照（定时同步）；``rows`` 每项 7 元组或 8 元组（末位 route_window）。"""
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(
+            "DELETE FROM bgp_learned_routes WHERE vrf = ? AND neighbor_ip = ?",
+            (v, nip),
+        )
+        if rows:
+            norm = []
+            for r in rows:
+                if len(r) >= 8:
+                    rw = str(r[7] or "upstream")
+                    core = r[:7]
+                else:
+                    rw = "upstream"
+                    core = r
+                norm.append((v,) + tuple(core) + (rw,))
+            conn.executemany(
+                "INSERT INTO bgp_learned_routes "
+                "(vrf, prefix, nexthop, neighbor_ip, remote_as, role, as_path, updated_at, route_window) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                norm,
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def iter_bgp_routes_for_advertise_source(
+    conn: sqlite3.Connection,
+    source_spec: str,
+    batch_size: int = 10000,
+):
+    """解析通告来源：neighbor IP、``@upstream``、``@downstream``。"""
+    spec = (source_spec or "").strip()
+    if not spec:
+        return
+    if spec.lower() in {"@upstream", "upstream", "rr"}:
+        sql = (
+            "SELECT prefix, nexthop FROM bgp_learned_routes "
+            "WHERE route_window = 'upstream' OR role IN ('rr','upstream') ORDER BY prefix"
+        )
+        params: tuple = ()
+    elif spec.lower() in {"@downstream", "downstream"}:
+        sql = (
+            "SELECT prefix, nexthop FROM bgp_learned_routes "
+            "WHERE route_window = 'downstream' OR role = 'downstream' ORDER BY prefix"
+        )
+        params = ()
+    else:
+        nip = validate_ipv4(spec)
+        sql = (
+            "SELECT prefix, nexthop FROM bgp_learned_routes WHERE neighbor_ip = ? ORDER BY prefix"
+        )
+        params = (nip,)
+    offset = 0
+    while True:
+        chunk = conn.execute(sql + " LIMIT ? OFFSET ?", params + (batch_size, offset)).fetchall()
+        if not chunk:
+            break
+        for row in chunk:
+            yield (str(row["prefix"]), str(row["nexthop"] or ""))
+        if len(chunk) < batch_size:
+            break
+        offset += batch_size
+
+
 # === BGP Learned Routes ===
 
 def replace_bgp_learned_routes_for_vrf(
@@ -1085,10 +1362,16 @@ def replace_bgp_learned_routes_for_vrf(
     try:
         conn.execute("DELETE FROM bgp_learned_routes WHERE vrf = ?", (vrf_n,))
         if rows:
+            norm = []
+            for r in rows:
+                core = r[:7] if len(r) >= 7 else r
+                rw = str(r[7]) if len(r) >= 8 else "upstream"
+                norm.append((vrf_n,) + tuple(core) + (rw,))
             conn.executemany(
-                "INSERT INTO bgp_learned_routes (vrf, prefix, nexthop, neighbor_ip, remote_as, role, as_path, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [(vrf_n,) + tuple(r) for r in rows],
+                "INSERT INTO bgp_learned_routes "
+                "(vrf, prefix, nexthop, neighbor_ip, remote_as, role, as_path, updated_at, route_window) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                norm,
             )
         conn.execute("COMMIT")
     except Exception:
@@ -1125,15 +1408,90 @@ def delete_bgp_learned_routes_by_neighbor_ip(conn: sqlite3.Connection, neighbor_
     return total_deleted
 
 
+def _learned_routes_where_sql(
+    vrf: Optional[str] = None,
+    neighbor_ip: Optional[str] = None,
+    route_window: Optional[str] = None,
+) -> tuple[str, list]:
+    """构建 bgp_learned_routes 查询条件（仅 SQLite；route_window=upstream|downstream）。"""
+    clauses: list[str] = []
+    params: list = []
+    if vrf:
+        clauses.append("vrf = ?")
+        params.append(validate_vrf_name(vrf))
+    if neighbor_ip:
+        clauses.append("neighbor_ip = ?")
+        params.append(neighbor_ip.strip())
+    rw = (route_window or "").strip().lower()
+    if rw in {"upstream", "downstream"}:
+        clauses.append(
+            "(route_window = ? OR (COALESCE(route_window,'') = '' AND role IN ('rr','upstream') AND ? = 'upstream') "
+            "OR (COALESCE(route_window,'') = '' AND role = 'downstream' AND ? = 'downstream'))"
+        )
+        params.extend([rw, rw, rw])
+    if not clauses:
+        return "", params
+    return "WHERE " + " AND ".join(clauses), params
+
+
+def summarize_learned_routes_by_window(conn: sqlite3.Connection) -> Dict[str, int]:
+    out = {"upstream": 0, "downstream": 0, "total": 0}
+    for row in conn.execute(
+        """
+        SELECT
+          CASE
+            WHEN route_window = 'downstream'
+              OR (COALESCE(route_window, '') = '' AND role = 'downstream') THEN 'downstream'
+            ELSE 'upstream'
+          END AS win,
+          COUNT(*) AS c
+        FROM bgp_learned_routes
+        GROUP BY win
+        """
+    ):
+        win = str(row[0] or "upstream")
+        c = int(row[1] or 0)
+        if win == "downstream":
+            out["downstream"] = c
+        else:
+            out["upstream"] = c
+        out["total"] += c
+    return out
+
+
+def list_bgp_peer_snapshots_brief(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    rows = []
+    for row in conn.execute(
+        """
+        SELECT vrf, neighbor_ip, window_type, frozen, session_established, route_count, last_sync_at
+        FROM bgp_peer_snapshot ORDER BY window_type, vrf, neighbor_ip
+        """
+    ):
+        rows.append(
+            {
+                "vrf": str(row["vrf"]),
+                "neighbor_ip": str(row["neighbor_ip"]),
+                "window_type": str(row["window_type"] or ""),
+                "frozen": int(row["frozen"]) != 0,
+                "session_established": int(row["session_established"]) != 0,
+                "route_count": int(row["route_count"] or 0),
+                "last_sync_at": str(row["last_sync_at"] or ""),
+            }
+        )
+    return rows
+
+
 def list_bgp_learned_routes(
     conn: sqlite3.Connection,
     vrf: Optional[str] = None,
     neighbor_ip: Optional[str] = None,
     page: Optional[int] = None,
     page_size: Optional[int] = None,
+    route_window: Optional[str] = None,
 ) -> List[sqlite3.Row]:
+    rw_filter = (route_window or "").strip().lower() or None
     # 优先从缓存读取
-    if HAS_BGP_CACHE:
+    if HAS_BGP_CACHE and not rw_filter:
         try:
             cache = bgp_route_cache.get_global_cache()
             vrf_n = validate_vrf_name(vrf) if vrf else None
@@ -1150,19 +1508,12 @@ def list_bgp_learned_routes(
             pass
 
     # 回退到数据库
-    where = ""
-    params: list = []
-    if vrf:
-        where = "WHERE vrf = ?"
-        params.append(validate_vrf_name(vrf))
-    if neighbor_ip:
-        if where:
-            where += " AND neighbor_ip = ?"
-        else:
-            where = "WHERE neighbor_ip = ?"
-        params.append(neighbor_ip.strip())
-    sql = "SELECT vrf, prefix, nexthop, neighbor_ip, remote_as, role, as_path, updated_at " \
-          "FROM bgp_learned_routes " + where + " ORDER BY vrf, prefix, nexthop"
+    where, params = _learned_routes_where_sql(vrf, neighbor_ip, rw_filter)
+    sql = (
+        "SELECT vrf, prefix, nexthop, neighbor_ip, remote_as, role, as_path, updated_at, "
+        "COALESCE(NULLIF(route_window,''), CASE WHEN role = 'downstream' THEN 'downstream' ELSE 'upstream' END) AS route_window "
+        "FROM bgp_learned_routes " + where + " ORDER BY route_window, vrf, prefix, nexthop"
+    )
     if page is not None and page_size is not None:
         sql += " LIMIT ? OFFSET ?"
         params.append(page_size)
@@ -1178,8 +1529,12 @@ def create_route_row(route) -> sqlite3.Row:
         def __getitem__(self, key):
             return self._data[key]
         def keys(self):
-            return ['vrf', 'prefix', 'nexthop', 'neighbor_ip', 'remote_as', 'role', 'as_path', 'updated_at']
+            return [
+                'vrf', 'prefix', 'nexthop', 'neighbor_ip', 'remote_as', 'role', 'as_path',
+                'updated_at', 'route_window',
+            ]
 
+    rw = 'downstream' if (route.role or '').lower() == 'downstream' else 'upstream'
     return FakeRow({
         'vrf': '',
         'prefix': route.prefix,
@@ -1188,7 +1543,8 @@ def create_route_row(route) -> sqlite3.Row:
         'remote_as': route.remote_as,
         'role': route.role,
         'as_path': route.as_path,
-        'updated_at': route.updated_at
+        'updated_at': route.updated_at,
+        'route_window': rw,
     })
 
 
@@ -1196,9 +1552,11 @@ def count_bgp_learned_routes(
     conn: sqlite3.Connection,
     vrf: Optional[str] = None,
     neighbor_ip: Optional[str] = None,
+    route_window: Optional[str] = None,
 ) -> int:
+    rw_filter = (route_window or "").strip().lower() or None
     # 优先从缓存读取
-    if HAS_BGP_CACHE:
+    if HAS_BGP_CACHE and not rw_filter:
         try:
             cache = bgp_route_cache.get_global_cache()
             vrf_n = validate_vrf_name(vrf) if vrf else None
@@ -1210,17 +1568,7 @@ def count_bgp_learned_routes(
             pass
 
     # 回退到数据库
-    where = ""
-    params: list = []
-    if vrf:
-        where = "WHERE vrf = ?"
-        params.append(validate_vrf_name(vrf))
-    if neighbor_ip:
-        if where:
-            where += " AND neighbor_ip = ?"
-        else:
-            where = "WHERE neighbor_ip = ?"
-        params.append(neighbor_ip.strip())
+    where, params = _learned_routes_where_sql(vrf, neighbor_ip, rw_filter)
     row = conn.execute("SELECT COUNT(*) FROM bgp_learned_routes " + where, params).fetchone()
     return int(row[0]) if row else 0
 

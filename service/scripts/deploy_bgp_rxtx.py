@@ -22,12 +22,13 @@ PRESERVE_DIR = os.environ.get("MTR_OP_PRESERVE_DIR", "").strip().lower() in {"1"
 RR_ADDR = os.environ.get("RR_ADDR", "139.159.43.249")
 RR_AS = os.environ.get("RR_AS", "63199")
 LOCAL_AS = os.environ.get("LOCAL_AS", "63199")
-ROUTER_ID = os.environ.get("ROUTER_ID", "101.89.68.109")
+ROUTER_ID = os.environ.get("ROUTER_ID", "139.159.43.207")
 REDIS_ADDR = os.environ.get("REDIS_ADDR", "localhost:6379")
 ROCKSDB_PATH = os.environ.get("ROCKSDB_PATH", "/var/lib/bgp_agent/rocksdb")
 API_ADDR = os.environ.get("API_ADDR", ":9179")
 
 OP_DOWNSTREAM_IFACE = os.environ.get("MTR_OP_DOWNSTREAM_IFACE", "eno1np0")
+OP_RR_UPLINK_IFACE = os.environ.get("MTR_BGP_RR_UPLINK_IFACE", "enp59s0f0np0")
 SATELLITE_PEER_IP = os.environ.get("MTR_SATELLITE_PEER_IP", "139.159.43.208")
 PROBE_SSH_HOST = os.environ.get("MTR_PROBE_SSH_HOST", OP_HOST)
 
@@ -211,7 +212,6 @@ Type=simple
 WorkingDirectory={OP_DIR}/bgp_agent
 Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
 ExecStart={OP_DIR}/bgp_agent/bgp_agent \\
-  -rr {RR_ADDR} -rr-as {RR_AS} \\
   -local-as {LOCAL_AS} -router-id {ROUTER_ID} \\
   -redis {REDIS_ADDR} -rocksdb {ROCKSDB_PATH} \\
   -api {API_ADDR}
@@ -265,6 +265,7 @@ export MTR_OP_NFT={OP_DIR}/nft_mtr_spoof.nft
 export MTR_OP_DATA={OP_DIR}/data
 export MTR_BGP_IPVLAN_AUTO=1
 export MTR_BGP_IPVLAN_BASE_IFACE={OP_DOWNSTREAM_IFACE}
+export MTR_BGP_RR_UPLINK_IFACE={OP_RR_UPLINK_IFACE}
 export MTR_BGP_IPVLAN_PEER_IP={SATELLITE_PEER_IP}
 export MTR_PROBE_SSH_HOST={PROBE_SSH_HOST}
 

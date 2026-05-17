@@ -31,10 +31,6 @@ import json
 import logging
 import os
 
-try:
-    from . import frr_bgp
-except ImportError:
-    frr_bgp = None
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -80,7 +76,7 @@ def _phy_is_main(phy: str) -> bool:
 
 
 def _peer_ip() -> str:
-    return (os.environ.get("MTR_SATELLITE_PEER_IP") or "10.133.152.204").strip()
+    return (os.environ.get("MTR_SATELLITE_PEER_IP") or "139.159.43.208").strip()
 
 
 def _vrf_prefix() -> str:

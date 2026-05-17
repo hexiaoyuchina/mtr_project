@@ -12,10 +12,11 @@ import (
 
 // Config RX Agent配置
 type Config struct {
-	LocalAS  uint32
-	RouterID string
-	RRAddr   string
-	RRAS     uint32
+	LocalAS       uint32
+	RouterID      string
+	LocalAddress  string // 与 RR 建连的 TCP 源（update-source），默认同 RouterID
+	RRAddr        string
+	RRAS          uint32
 }
 
 // RouteHandler 路由处理接口
@@ -52,15 +53,20 @@ func (a *RxAgent) Start(ctx context.Context) error {
 		Global: &api.Global{
 			Asn:        a.config.LocalAS,
 			RouterId:   a.config.RouterID,
-			ListenPort: 179, // BGP监听端口
+			ListenPort: 179,
 		},
 	}); err != nil {
 		return fmt.Errorf("启动BGP失败: %w", err)
 	}
 
-	// 添加RR作为邻居
-	if err := a.addRRNeighbor(ctx); err != nil {
-		return fmt.Errorf("添加RR邻居失败: %w", err)
+	// RR 由 OP 下发；启动参数 -rr 非空时预建会话
+	if a.config.RRAddr != "" {
+		if a.config.RRAS == 0 {
+			a.config.RRAS = a.config.LocalAS
+		}
+		if err := a.addRRNeighbor(ctx); err != nil {
+			return fmt.Errorf("添加RR邻居失败: %w", err)
+		}
 	}
 
 	// 启动路由监听
@@ -70,6 +76,18 @@ func (a *RxAgent) Start(ctx context.Context) error {
 		a.config.LocalAS, a.config.RouterID, a.config.RRAddr)
 
 	return nil
+}
+
+func (a *RxAgent) rrLocalAddress() string {
+	if a.config.LocalAddress != "" {
+		return a.config.LocalAddress
+	}
+	return a.config.RouterID
+}
+
+// LocalBGPAddress 供 API 展示：与 RR 建连的本端地址
+func (a *RxAgent) LocalBGPAddress() string {
+	return a.rrLocalAddress()
 }
 
 // addRRNeighbor 添加RR作为BGP邻居
@@ -90,6 +108,9 @@ func (a *RxAgent) addRRNeighbor(ctx context.Context) error {
 				},
 			},
 		},
+	}
+	if la := a.rrLocalAddress(); la != "" {
+		peer.Transport = &api.Transport{LocalAddress: la}
 	}
 
 	return a.server.AddPeer(ctx, &api.AddPeerRequest{Peer: peer})
@@ -168,6 +189,70 @@ func (a *RxAgent) handlePath(ctx context.Context, path *api.Path) {
 			log.Printf("处理update失败: %v", err)
 		}
 	}
+}
+
+// ReconfigureRR 由 OP 创建/更新 RR 会话（单 peer，本端 local_address 为与 RR 直连地址）
+func (a *RxAgent) ReconfigureRR(ctx context.Context, addr string, asn uint32, localAddress string) error {
+	if addr == "" {
+		return fmt.Errorf("rr address required")
+	}
+	if asn == 0 {
+		asn = a.config.LocalAS
+	}
+	la := localAddress
+	if la == "" {
+		la = a.rrLocalAddress()
+	}
+	if addr == a.config.RRAddr && asn == a.config.RRAS && la == a.config.LocalAddress && a.config.RRAddr != "" {
+		return nil
+	}
+	if a.config.RRAddr != "" {
+		_ = a.server.DeletePeer(ctx, &api.DeletePeerRequest{Address: a.config.RRAddr})
+	}
+	a.config.RRAddr = addr
+	a.config.RRAS = asn
+	a.config.LocalAddress = la
+	return a.addRRNeighbor(ctx)
+}
+
+// RemoveRR 删除 RR 会话（OP 删除邻居时）
+func (a *RxAgent) RemoveRR(ctx context.Context) error {
+	if a.config.RRAddr == "" {
+		return nil
+	}
+	err := a.server.DeletePeer(ctx, &api.DeletePeerRequest{Address: a.config.RRAddr})
+	a.config.RRAddr = ""
+	a.config.RRAS = 0
+	return err
+}
+
+// ListRRPeer 返回 RR 邻居状态
+func (a *RxAgent) ListRRPeer(ctx context.Context) (address string, remoteAS uint32, state string, pfxRcd uint32, enabled bool, err error) {
+	err = a.server.ListPeer(ctx, &api.ListPeerRequest{}, func(p *api.Peer) {
+		if p == nil || p.Conf == nil {
+			return
+		}
+		if p.Conf.NeighborAddress != a.config.RRAddr {
+			return
+		}
+		address = p.Conf.NeighborAddress
+		remoteAS = p.Conf.PeerAsn
+		if p.State != nil {
+			state = p.State.SessionState.String()
+			enabled = p.State.AdminState == api.PeerState_UP
+		}
+		for _, af := range p.AfiSafis {
+			if af.State != nil {
+				pfxRcd += uint32(af.State.Received)
+			}
+		}
+	})
+	return
+}
+
+// ConfigRouterID 返回配置的 Router ID
+func (a *RxAgent) ConfigRouterID() string {
+	return a.config.RouterID
 }
 
 // Stop 停止RX Agent

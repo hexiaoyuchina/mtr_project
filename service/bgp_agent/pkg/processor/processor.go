@@ -38,6 +38,10 @@ type Processor struct {
 	// RR状态监控
 	rrConnected  bool
 	rrMu         sync.RWMutex
+
+	// 下游 peer 连接状态：key = vrf+"|"+neighbor
+	downstreamPeerUp map[string]bool
+	dsMu             sync.RWMutex
 	
 	// 批量写入队列
 	pendingWrites chan *Route
@@ -48,10 +52,11 @@ type Processor struct {
 // NewProcessor 创建处理器
 func NewProcessor(storage Storage) *Processor {
 	return &Processor{
-		storage:       storage,
-		routes:        make(map[string]*Route),
-		rrConnected:   true,
-		pendingWrites: make(chan *Route, 10000), // 缓冲队列
+		storage:          storage,
+		routes:           make(map[string]*Route),
+		rrConnected:      true,
+		downstreamPeerUp: make(map[string]bool),
+		pendingWrites:    make(chan *Route, 10000), // 缓冲队列
 		batchSize:     1000,
 		flushInterval: 5 * time.Second,
 	}
@@ -236,6 +241,35 @@ func (p *Processor) IsRRConnected() bool {
 	p.rrMu.RLock()
 	defer p.rrMu.RUnlock()
 	return p.rrConnected
+}
+
+func dsPeerKey(vrf, neighbor string) string {
+	return vrf + "|" + neighbor
+}
+
+// SetDownstreamPeerConnected 下游会话状态（断链时 freeze 该 peer 的入库更新，由 OP 定时快照保留库内路由）。
+func (p *Processor) SetDownstreamPeerConnected(vrf, neighbor string, connected bool) {
+	if vrf == "" || neighbor == "" {
+		return
+	}
+	p.dsMu.Lock()
+	defer p.dsMu.Unlock()
+	old, ok := p.downstreamPeerUp[dsPeerKey(vrf, neighbor)]
+	p.downstreamPeerUp[dsPeerKey(vrf, neighbor)] = connected
+	if !ok || old != connected {
+		if connected {
+			log.Printf("下游 peer 恢复 vrf=%s neighbor=%s", vrf, neighbor)
+		} else {
+			log.Printf("下游 peer 断链 freeze vrf=%s neighbor=%s", vrf, neighbor)
+		}
+	}
+}
+
+// IsDownstreamPeerConnected 下游 peer 是否 Established。
+func (p *Processor) IsDownstreamPeerConnected(vrf, neighbor string) bool {
+	p.dsMu.RLock()
+	defer p.dsMu.RUnlock()
+	return p.downstreamPeerUp[dsPeerKey(vrf, neighbor)]
 }
 
 // GetRouteCount 获取路由数量

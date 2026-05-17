@@ -1,7 +1,8 @@
 # ARP 代答 + 多本机身份与同一对端建多条 BGP
 
 > **现网 OP 主机**：`101.89.68.109`（原实验室文档中的 Linux 200 / `10.133.152.200`）。  
-> **现网 BGP**：`LOCAL_AS=63199`，RR `139.159.43.249`，下游 `139.159.43.208` — 见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)。  
+> **现网 BGP**：`LOCAL_AS=63199`，RR `139.159.43.249`，下游 `139.159.43.208` — 网口分工见 **[BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)**；控制面架构见 **[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)**（GoBGP RX/TX + SQLite，非 FRR 会话）。  
+> 部署见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)。  
 > 下文 `10.133.152.*` 示例仅适用于 **VM 实验室**（Linux 200/201），勿直接套用到现网。
 
 ## 需求在协议里的含义
@@ -75,6 +76,26 @@ OP 已支持：
 
 在 **201** 上 `Neighbor` 列会出现**多个**对端地址（200 的多个身份在 201 上表现为多个 Remote），每个对应 200 上一行邻居配置。  
 在 **200** 上 `show bgp vrf vrf2102 summary` 的 `Neighbor` 列为 **201 的多个地址**，各行可对应不同的 `update-source`。
+
+---
+
+## 现网：冒充 RR（249）在卫星 VRF 连下游（208），与真 RR 会话隔离
+
+需求：**不能**在 default/主表用 249 与 RR 建连的同时又在主表用 249 连下游；应：
+
+| 会话 | VRF | 邻居 | TCP 源 | 角色 | 数据面 |
+|------|-----|------|--------|------|--------|
+| 真 RR | `default` / `gobgp-rr` | `139.159.43.249` | `139.159.43.207` | RR | GoBGP **RX** |
+| 冒充 RR 对下游 | `vbgp13915943249`（示例） | `139.159.43.208` | `139.159.43.249` | downstream | GoBGP **TX**（独立端口实例） |
+
+操作顺序：
+
+1. **ARP 引流**：冒充网关 `139.159.43.249`，`satellite_vrf` 填 `vbgp13915943249`（或留空由系统生成），**出接口** 选 **`eno1np0`**（下游与冒充 BGP 数据面；**勿**选 `enp59s0f0np0`，该口仅用于真 RR 会话 `207→249`）。
+2. **卫星 VRF 收敛**（保存 ARP 或 `POST /api/arp-spoof/satellite-vrfs/reconcile`）：创建 ipvlan `iv249@eno1np0`、到 `MTR_BGP_IPVLAN_PEER_IP`（现网 `139.159.43.208`）的 VRF 路由，以及 `ip rule from 249 lookup <vrf表>`。真 RR 主表路由走 `MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0`，见 [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)。
+3. **BGP 管理**：VRF 选 `vbgp13915943249`，邻居 `139.159.43.208`，角色 **下游**，TCP 源 **249**；Agent 会对该邻居设置 `bind_interface=iv249`。
+4. **208 侧**：须接受来自 `139.159.43.249` 的 BGP（或主动连该地址），与真 RR 路径独立。
+
+环境变量（现网）：`MTR_BGP_IPVLAN_PEER_IP=139.159.43.208`，`MTR_BGP_IPVLAN_BASE_IFACE=eno1np0`，`MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0`，`MTR_SATELLITE_BGP_TCP_SOURCE=spoof`。
 
 ---
 

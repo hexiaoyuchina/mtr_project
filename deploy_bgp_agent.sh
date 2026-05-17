@@ -11,7 +11,7 @@ echo "=========================================="
 RR_ADDR="${RR_ADDR:-139.159.43.249}"
 RR_AS="${RR_AS:-63199}"
 LOCAL_AS="${LOCAL_AS:-63199}"
-ROUTER_ID="${ROUTER_ID:-101.89.68.109}"
+ROUTER_ID="${ROUTER_ID:-139.159.43.207}"
 REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
 ROCKSDB_PATH="${ROCKSDB_PATH:-/var/lib/bgp_agent/rocksdb}"
 API_ADDR="${API_ADDR:-:9179}"
@@ -71,7 +71,7 @@ Environment="ROUTER_ID=$ROUTER_ID"
 Environment="REDIS_ADDR=$REDIS_ADDR"
 Environment="ROCKSDB_PATH=$ROCKSDB_PATH"
 Environment="API_ADDR=$API_ADDR"
-ExecStart=$(pwd)/bgp_agent -rr $RR_ADDR -rr-as $RR_AS -local-as $LOCAL_AS -router-id $ROUTER_ID -redis $REDIS_ADDR -rocksdb $ROCKSDB_PATH -api $API_ADDR
+ExecStart=$(pwd)/bgp_agent -local-as $LOCAL_AS -router-id $ROUTER_ID -redis $REDIS_ADDR -rocksdb $ROCKSDB_PATH -api $API_ADDR
 Restart=always
 RestartSec=10
 

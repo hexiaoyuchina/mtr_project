@@ -1,367 +1,152 @@
-# BGP RX/TX分离架构部署指南
+# BGP 部署与验收
 
-## 现网参数速查（Linux 200 / OP 主机）
-
-| 项 | 值 |
-|----|-----|
-| SSH | `root@101.89.68.109` |
-| 管理界面 | `http://101.89.68.109:8808/` |
-| BGP Agent API | `http://101.89.68.109:9179` |
-| `LOCAL_AS` | `63199` |
-| `ROUTER_ID` | `101.89.68.109` |
-| `RR_ADDR` | `139.159.43.249` |
-| `RR_AS` | `63199` |
-| 下游邻居（TX 通告） | `139.159.43.208` |
-| `MTR_SATELLITE_PEER_IP` | `139.159.43.208`（FRR/卫星 BGP 对端，与下游一致） |
-
-日常发版见 [部署.md](./部署.md)。
-
-### BGP 管理页与 GoBGP 分工
-
-| 对象 | 配置方式 |
-|------|----------|
-| **RR**（`139.159.43.249`） | **`bgp-agent.service`** 的 `-rr` / `-rr-as`（GoBGP **RX**），**不要**在 OP「BGP 管理」里用 FRR 卫星 VRF 再建 RR 邻居 |
-| **下游**（`139.159.43.208`） | GoBGP **TX**（`POST /api/gobgp/neighbors`）或按现场仍用 FRR 卫星 VRF + 角色 `downstream` |
-| 实验室 `10.133.152.*` | 仅 VM 实验；现网勿填 |
+架构与表/API 说明见 **[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)**、**[BGP_DATA_AND_API.md](./BGP_DATA_AND_API.md)**。网口勿配错见 **[BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)**。日常发版 **[部署.md](./部署.md)**。
 
 ---
 
-## 架构概述
+## 1. 现网参数速查
 
-本系统采用**GoBGP RX/TX分离架构**，实现了BGP路由的高可用性和持久化：
+| 项 | 值 |
+|----|-----|
+| SSH / Web | `101.89.68.109:8808`（`enp59s0f1np1`） |
+| bgp-agent | `http://127.0.0.1:9179` |
+| `LOCAL_AS` / `RR_AS` | `63199` |
+| `ROUTER_ID` | `139.159.43.207`（RX TCP 源，`enp59s0f0np0`） |
+| RR | `139.159.43.249` |
+| 下游 | `139.159.43.208`（卫星 VRF，`eno1np0`） |
+| `MTR_BGP_IPVLAN_BASE_IFACE` | **`eno1np0`** |
+| `MTR_BGP_RR_UPLINK_IFACE` | **`enp59s0f0np0`** |
 
-```
-                    ┌────────────┐
-                    │     RR     │
-                    └─────┬──────┘
-                          │ iBGP
-                    Full Table
-                          │
-                 ┌────────▼────────┐
-                 │  GoBGP-RX       │
-                 │  只负责收路由    │
-                 └────────┬────────┘
-                          │
-                    WatchEvent
-                          │
-                 ┌────────▼────────┐
-                 │ Route Processor │
-                 │ Go服务           │
-                 └──────┬──────────┘
-                        │
-            ┌───────────┴────────────┐
-            │                        │
-      ┌─────▼──────┐         ┌──────▼──────┐
-      │ Redis      │         │ RocksDB     │
-      │ 热缓存      │         │ 持久化RIB    │
-      └─────┬──────┘         └──────┬──────┘
-            │                        │
-            └──────────┬────────────┘
-                       │
-               Effective RIB
-                       │
-               ┌───────▼────────┐
-               │ GoBGP-TX       │
-               │ 只负责通告      │
-               └───────┬────────┘
-                       │ iBGP
-                       │
-                       A (下游)
-```
+---
 
-## 核心特性
+## 2. 组件与分工
 
-### 1. RX/TX分离
-- **RX Agent**: 只从RR接收路由，不通告
-- **TX Agent**: 只向下游通告路由，不接收
-- **解耦优势**: RR断连时TX继续通告，实现路由冻结
+| 组件 | 单元 | 职责 |
+|------|------|------|
+| **bgp-agent** | `bgp-agent.service` | GoBGP RX/TX、Freeze、Agent API |
+| **mtr-op** | `mtr-op.service` | Web/API、SQLite、定时双向同步、交叉通告 |
 
-### 2. 持久化存储
-- **Redis**: 热缓存，快速读写
-- **RocksDB**: 持久化，重启快速恢复
-- **支持百万级路由**
+| 邻居类型 | 配置入口 | Agent 动作 |
+|----------|----------|------------|
+| RR `249` | Web「BGP 管理」→ 角色 **RR** | `POST /api/rr/config` |
+| 下游 `208` | 角色 **下游** + 卫星 VRF | TX 按 VRF 懒启动，`/api/neighbors/add` |
 
-### 3. Freeze机制
-- RR down时自动freeze
-- 保持当前RIB继续通告
-- 不触发withdraw
-- RR恢复后自动unfreeze
+RR **不要**写进 `bgp-agent` 启动参数 `-rr`；由 OP 创建。
 
-## 部署步骤
+---
 
-### 1. 安装依赖
+## 3. 依赖与编译
 
-#### Go依赖
 ```bash
+# Agent（目标机需 Go 工具链）
 cd service/bgp_agent
 go mod download
-```
+go build -o /usr/local/bin/bgp_agent .
 
-#### Python依赖
-```bash
+# OP
 cd service
 pip install -r requirements.txt
+
+# Agent 运行时依赖
+apt-get install -y redis-server librocksdb-dev
 ```
 
-#### 系统依赖
-```bash
-# Redis
-apt-get install redis-server
+仓库脚本：`service/scripts/deploy_bgp_rxtx.py`（上传、systemd、环境变量模板）。
 
-# RocksDB（编译时需要）
-apt-get install librocksdb-dev
-```
+---
 
-### 2. 配置参数
+## 4. 环境变量（要点）
 
-#### GoBGP Agent配置
-编辑启动参数（或使用环境变量）：
+### bgp-agent（`/var/lib/bgp_agent/bgp-agent.env` 或 systemd）
 
 ```bash
-# RR配置（iBGP 全表）
-export RR_ADDR="139.159.43.249"         # RR 地址
-export RR_AS="63199"                    # RR 的 AS 号
-
-# 本地配置
-export LOCAL_AS="63199"                 # 本端 AS 号
-export ROUTER_ID="101.89.68.109"        # BGP Router ID（现网管理地址）
-
-# 存储配置
-export REDIS_ADDR="localhost:6379"      # Redis地址
-export ROCKSDB_PATH="/var/lib/bgp_agent/rocksdb"  # RocksDB路径
-
-# API配置
-export API_ADDR=":9179"                 # 管理API监听地址
+LOCAL_AS=63199
+ROUTER_ID=139.159.43.207
+REDIS_ADDR=localhost:6379
+ROCKSDB_PATH=/var/lib/bgp_agent/rocksdb
+API_ADDR=:9179
+MTR_BGP_PEER_WATCH_SEC=15
 ```
 
-#### Python OP配置
+### mtr-op（`service/systemd/mtr-op.service`）
+
 ```bash
-# GoBGP Agent地址
-export GOBGP_AGENT_URL="http://127.0.0.1:9179"
+GOBGP_AGENT_URL=http://127.0.0.1:9179
+MTR_BGP_RIB_SYNC=1
+MTR_BGP_RIB_SYNC_SEC=60
+MTR_BGP_IPVLAN_AUTO=1
+MTR_BGP_IPVLAN_BASE_IFACE=eno1np0
+MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0
+MTR_BGP_IPVLAN_PEER_IP=139.159.43.208
+MTR_SATELLITE_PEER_IP=139.159.43.208
 ```
 
-### 3. 启动服务
+---
 
-#### 启动GoBGP Agent
+## 5. 启动顺序
+
 ```bash
-cd service/bgp_agent
-
-# 编译
-go build -o bgp_agent
-
-# 启动
-./bgp_agent \
-  -rr 139.159.43.249 \
-  -rr-as 63199 \
-  -local-as 63199 \
-  -router-id 101.89.68.109 \
-  -redis localhost:6379 \
-  -rocksdb /var/lib/bgp_agent/rocksdb \
-  -api :9179
+systemctl enable --now redis-server
+systemctl enable --now bgp-agent
+systemctl enable --now mtr-op
 ```
 
-#### 启动Python OP
+首次现网建议顺序（冒充 RR 连下游）见 [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)「操作顺序」。
+
+---
+
+## 6. 验收清单
+
+### 6.1 Agent 存活
+
 ```bash
-cd service
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+curl -sf http://127.0.0.1:9179/health
+curl -s http://127.0.0.1:9179/api/status | head -c 800
+curl -s http://127.0.0.1:9179/api/peers/freeze-status
 ```
 
-### 4. 验证部署
+### 6.2 OP 与后台同步
 
-#### 检查GoBGP Agent状态
 ```bash
-curl http://localhost:9179/health
-curl http://localhost:9179/api/status
+curl -s http://127.0.0.1:8808/api/gobgp/status
+curl -s "http://127.0.0.1:8808/api/bgp/learned-routes/filter-options"
+curl -s "http://127.0.0.1:8808/api/bgp/learned-routes?route_window=upstream&page_size=5"
+curl -s "http://127.0.0.1:8808/api/bgp/learned-routes?route_window=downstream&page_size=5"
 ```
 
-#### 检查Python OP状态
+Web：**学习路由** 页应显示上游/下游 KPI；**立即同步** 后 `last_sync_ok` 为成功。
+
+### 6.3 双向同步日志
+
 ```bash
-curl http://localhost:8000/api/gobgp/status
+journalctl -u mtr-op -f | grep -i bidirectional
 ```
 
-#### 查看BGP学习路由
-```bash
-curl http://localhost:9179/api/routes
-curl http://localhost:8000/api/gobgp/routes
-```
+期望周期性 `bidirectional sync done`；RR 断链时见 `freeze` 且库内条数不删。
 
-## 使用指南
+### 6.4 交叉通告
 
-### 前端界面
+BGP 管理行：RR 默认来源 `@downstream`，下游默认 `@upstream`；点「应用」后查 `journalctl -u mtr-op` 与 Agent 日志。
 
-访问 `http://localhost:8000` 进入管理界面：
+---
 
-1. **BGP管理页面**
-   - 顶部显示GoBGP架构状态面板
-   - RR连接状态：显示与RR的连接状态
-   - 系统状态：显示是否处于frozen状态
-   - 路由数量：实时显示学习到的路由数量
+## 7. 故障处理（简表）
 
-2. **操作按钮**
-   - **详细状态**: 查看完整的系统状态JSON
-   - **冻结**: 手动触发freeze（测试用）
-   - **解冻**: 手动解除freeze
+| 现象 | 可能原因 | 处理 |
+|------|----------|------|
+| 学习路由为空 | 未同步 / Agent down | `POST /api/bgp/learned-routes/sync`；查 `bgp-agent` |
+| 上游有、下游无 | TX 未 Established / VRF 错 | `peers/freeze-status`；核对 `eno1np0` 与卫星 VRF |
+| RR 断链后下游仍通 | 设计行为（Freeze） | Agent TX freeze + SQLite 保留快照 |
+| 学习页与 Agent 条数不一致 | 页面只读 SQLite | 等同步或手动同步；勿用 `/api/gobgp/routes` 对比 UI |
+| ipvlan 与 RR 争用同一口 | `MTR_BGP_IPVLAN_BASE_IFACE` 配错 | 必须为 `eno1np0`，见 BGP_OP_NETWORK |
 
-### API接口
+Agent 内 Redis/RocksDB 故障：RIB 仍可从 RocksDB 恢复；OP SQLite 需同步成功才有 Web 数据。
 
-#### 获取系统状态
-```bash
-GET /api/gobgp/status
-```
+---
 
-#### 获取路由列表
-```bash
-GET /api/gobgp/routes?page=1&page_size=100
-```
+## 8. 发版注意
 
-#### 添加下游邻居
-```bash
-POST /api/gobgp/neighbors
-Content-Type: application/json
-
-{
-  "address": "139.159.43.208",
-  "remote_as": 63199
-}
-```
-
-> `remote_as` 须与对端现网配置一致；上例按同 AS iBGP 下游填写。
-
-#### 删除下游邻居
-```bash
-DELETE /api/gobgp/neighbors/139.159.43.208
-```
-
-#### 手动冻结/解冻（测试用）
-```bash
-POST /api/gobgp/freeze
-POST /api/gobgp/unfreeze
-```
-
-## 故障处理
-
-### RR连接断开
-
-**现象**: 前端显示"RR连接状态: ✗ 断开"
-
-**系统行为**:
-1. 自动进入freeze模式
-2. 停止接受新的路由更新
-3. 保持当前RIB继续向下游通告
-4. 不触发withdraw
-
-**恢复步骤**:
-1. 修复RR连接
-2. 系统自动检测到RR恢复
-3. 自动解除freeze
-4. 开始接受新的路由更新
-
-### 系统重启
-
-**启动流程**:
-1. GoBGP Agent启动
-2. 从RocksDB恢复路由到内存
-3. 恢复路由到Redis热缓存
-4. TX Agent重新向下游通告全部路由
-5. RX Agent重新连接RR
-
-**预期时间**:
-- 百万条路由约需1-2分钟完成恢复
-- 下游邻居会收到完整的路由表
-
-### Redis故障
-
-**影响**: 热缓存不可用，性能下降
-
-**系统行为**:
-- 继续从RocksDB读取路由
-- 路由查询变慢
-- 不影响路由通告
-
-**恢复**: 重启Redis后自动恢复
-
-### RocksDB损坏
-
-**影响**: 持久化数据丢失
-
-**系统行为**:
-- 从RR重新学习全量路由
-- 写入新的RocksDB
-
-**预防**: 定期备份RocksDB目录
-
-## 性能调优
-
-### 百万级路由优化
-
-1. **增加Redis内存**
-   ```bash
-   # redis.conf
-   maxmemory 16gb
-   ```
-
-2. **RocksDB写入优化**
-   - 批量写入（默认1000条/批）
-   - 定期刷盘（默认5秒）
-
-3. **系统资源**
-   - CPU: 32核+
-   - 内存: 128GB+
-   - 磁盘: NVMe SSD
-
-### 监控指标
-
-- RR连接状态
-- 路由数量
-- Redis内存使用
-- RocksDB磁盘空间
-- 批量写入队列长度
-
-## 与FRR架构对比
-
-| 特性 | FRR架构 | GoBGP RX/TX分离架构 |
-|------|---------|---------------------|
-| RR断连处理 | 撤销所有路由 | freeze，保持通告 |
-| 重启恢复 | 需要重新学习 | 从RocksDB快速恢复 |
-| 路由持久化 | 无 | Redis + RocksDB |
-| 百万级路由 | 性能瓶颈 | 优化支持 |
-| 控制平面HA | 弱 | 强 |
-
-## 常见问题
-
-**Q: 如何验证freeze机制？**
-
-A: 
-1. 前端点击"冻结"按钮
-2. 观察状态变为"❄️ 冻结（保持RIB）"
-3. 路由数量保持不变
-4. 点击"解冻"恢复
-
-**Q: 路由数量不更新？**
-
-A: 检查：
-1. RR连接是否正常
-2. 是否处于frozen状态
-3. RX Agent日志
-
-**Q: 性能优化建议？**
-
-A:
-1. 使用SSD存储RocksDB
-2. 增大Redis内存配置
-3. 调整批量写入大小
-4. 使用更多CPU核心
-
-## 技术支持
-
-- 日志位置: 
-  - GoBGP Agent: stdout/stderr
-  - Python OP: uvicorn日志
-  
-- 调试工具:
-  - `curl http://localhost:9179/api/status`
-  - `curl http://localhost:9179/api/routes/count`
-  
-- 监控指标:
-  - Prometheus集成（待开发）
-  - 系统资源监控
+1. 修改 `service/bgp_agent` 后 **必须** `go build` 并 `systemctl restart bgp-agent`。  
+2. 修改 `service/app` 后 `systemctl restart mtr-op`。  
+3. 修改 `service/static/index.html` 后重启 mtr-op 或清浏览器缓存。  
+4. Schema 变更随 `storage.init_schema` 迁移列，无需手改库（新库自动建表）。
