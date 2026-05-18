@@ -45,3 +45,20 @@ func ParseIPv4Unicast(path *api.Path) (prefix string, nexthop string, asPath str
 	}
 	return prefix, nexthop, asPath, true
 }
+
+// ParseWithdrawPrefix 解析 withdraw 的 IPv4 前缀。
+func ParseWithdrawPrefix(path *api.Path) (prefix string, ok bool) {
+	if path == nil || !path.IsWithdraw {
+		return "", false
+	}
+	nlri := &api.IPAddressPrefix{}
+	if path.Nlri != nil {
+		if err := path.Nlri.UnmarshalTo(nlri); err != nil {
+			return "", false
+		}
+	}
+	if nlri.Prefix == "" {
+		return "", false
+	}
+	return nlri.Prefix + "/" + strconv.FormatUint(uint64(nlri.PrefixLen), 10), true
+}

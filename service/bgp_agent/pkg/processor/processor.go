@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,9 +36,13 @@ type Processor struct {
 	routes       map[string]*Route // 内存索引：prefix -> Route
 	routesMu     sync.RWMutex
 	
-	// RR状态监控
-	rrConnected  bool
-	rrMu         sync.RWMutex
+	// 上游 RR 连接状态：key = neighbor IP
+	upstreamPeerUp map[string]bool
+	upMu           sync.RWMutex
+
+	// 任一 RR 是否 Established（legacy Effective RIB / TX freeze）
+	rrConnected bool
+	rrMu        sync.RWMutex
 
 	// 下游 peer 连接状态：key = vrf+"|"+neighbor
 	downstreamPeerUp map[string]bool
@@ -55,6 +60,7 @@ func NewProcessor(storage Storage) *Processor {
 		storage:          storage,
 		routes:           make(map[string]*Route),
 		rrConnected:      true,
+		upstreamPeerUp:   make(map[string]bool),
 		downstreamPeerUp: make(map[string]bool),
 		pendingWrites:    make(chan *Route, 10000), // 缓冲队列
 		batchSize:     1000,
@@ -219,7 +225,37 @@ func (p *Processor) restoreFromDisk(ctx context.Context) error {
 	return nil
 }
 
-// SetRRConnected 设置RR连接状态
+func usPeerKey(neighbor string) string {
+	return neighbor
+}
+
+// SetUpstreamPeerConnected 单个上游 RR 会话状态（按邻居 freeze 入库）。
+func (p *Processor) SetUpstreamPeerConnected(neighbor string, connected bool) {
+	neighbor = strings.TrimSpace(neighbor)
+	if neighbor == "" {
+		return
+	}
+	p.upMu.Lock()
+	old, ok := p.upstreamPeerUp[usPeerKey(neighbor)]
+	p.upstreamPeerUp[usPeerKey(neighbor)] = connected
+	p.upMu.Unlock()
+	if !ok || old != connected {
+		if connected {
+			log.Printf("上游 RR 恢复 neighbor=%s", neighbor)
+		} else {
+			log.Printf("上游 RR 断链 freeze neighbor=%s", neighbor)
+		}
+	}
+}
+
+// IsUpstreamPeerConnected 该 RR 是否 Established。
+func (p *Processor) IsUpstreamPeerConnected(neighbor string) bool {
+	p.upMu.RLock()
+	defer p.upMu.RUnlock()
+	return p.upstreamPeerUp[usPeerKey(neighbor)]
+}
+
+// SetRRConnected 设置「任一 RR」连接状态（TX 池 freeze / legacy RIB）
 func (p *Processor) SetRRConnected(connected bool) {
 	p.rrMu.Lock()
 	defer p.rrMu.Unlock()

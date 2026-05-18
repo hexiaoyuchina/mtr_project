@@ -103,7 +103,7 @@ flowchart LR
 | `POST` | `/api/arp-spoof/satellite-vrfs/reconcile` | 按当前库 + 环境变量执行卫星 VRF 对齐；返回旧 veth 方案和新 ipvlan L2 方案的结果，便于 **cron** 或手工补跑 |
 | `POST` | `/api/bgp/ipvlan-satellites/reconcile` | 仅执行新 ipvlan L2 卫星 BGP 收敛：创建/维护 `iv{末字节}@物理口`、VRF 路由、清理干扰 `ip rule` |
 | `GET` | `/api/bgp/vrfs` | meta / 卫星配置 / 内核 **`ip link type vrf`** 中的 VRF 列表 |
-| `POST` | `/api/bgp/instances` | 按需创建内核 VRF（GoBGP 按 VRF 懒启动 TX，无需 FRR `router bgp`） |
+| `POST` | `/api/bgp/instances` | 按需创建内核 VRF（GoBGP 按 VRF 懒启动 TX，不依赖 FRR） |
 | `GET` | `/api/bgp/neighbors` | 从 **bgp-agent** 读邻居；与 SQLite meta 合并展示 |
 | `POST` | `/api/bgp/neighbors` | 下发 **bgp-agent**（RR→RX，下游/卫星→TX）+ 写 meta；可选建内核 VRF / ipvlan |
 | `PATCH` | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | 删后重建 Agent 邻居并更新 meta |

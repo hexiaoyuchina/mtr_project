@@ -20,6 +20,18 @@ def validate_ipv4(s: str) -> str:
     return s.strip()
 
 
+def is_usable_bgp_source_ip(s: str) -> bool:
+    """GoBGP 在 admin-down 时可能回报 0.0.0.0；此类值不得覆盖 SQLite 中已配置的 TCP 源。"""
+    t = (s or "").strip()
+    if not t or t in ("0.0.0.0", "0"):
+        return False
+    try:
+        validate_ipv4(t)
+        return True
+    except ValueError:
+        return False
+
+
 # OP 中 BGP 邻居「角色」标签（仅存 SQLite，不下发 FRR）
 BGP_META_ROLES = frozenset({"upstream", "downstream", "unknown", "rr"})
 
@@ -76,6 +88,7 @@ class ArpSpoofTarget:
     policy_mode: str
     policy_cidrs: str
     note: str
+    created_at: str = ""
 
 
 @dataclass
@@ -87,6 +100,7 @@ class BgpNeighborMeta:
     source_ip: str = ""
     advertise_routes: int = 0
     advertise_routes_from: str = ""
+    store_received_routes: int = 0
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -160,13 +174,29 @@ def init_schema(conn: sqlite3.Connection) -> None:
           enabled INTEGER NOT NULL DEFAULT 1,
           policy_mode TEXT NOT NULL DEFAULT 'gateway_only',
           policy_cidrs TEXT NOT NULL DEFAULT '',
-          note TEXT NOT NULL DEFAULT ''
+          note TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
         """
     )
 
     try:
         conn.execute("ALTER TABLE arp_spoof_targets ADD COLUMN satellite_vrf TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(
+            "ALTER TABLE arp_spoof_targets ADD COLUMN created_at TEXT NOT NULL "
+            "DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+        )
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(
+            "UPDATE arp_spoof_targets SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE created_at IS NULL OR trim(created_at) = ''"
+        )
+        conn.commit()
     except sqlite3.OperationalError:
         pass
 
@@ -232,6 +262,13 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE bgp_neighbor_meta ADD COLUMN created_at TEXT NOT NULL "
             "DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute(
+            "ALTER TABLE bgp_neighbor_meta ADD COLUMN store_received_routes INTEGER NOT NULL DEFAULT 0"
         )
     except sqlite3.OperationalError:
         pass
@@ -582,28 +619,7 @@ def set_arp_spoof_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
 
 # === ARP Spoof Targets ===
 
-def list_arp_spoof_targets(conn: sqlite3.Connection) -> List[ArpSpoofTarget]:
-    out = []
-    for row in conn.execute("SELECT * FROM arp_spoof_targets ORDER BY id"):
-        out.append(
-            ArpSpoofTarget(
-                id=int(row["id"]),
-                spoof_gateway_ip=str(row["spoof_gateway_ip"]),
-                satellite_vrf=str(row["satellite_vrf"]) if "satellite_vrf" in row.keys() else "",
-                egress_iface=str(row["egress_iface"]),
-                enabled=bool(row["enabled"]),
-                policy_mode=str(row["policy_mode"]),
-                policy_cidrs=str(row["policy_cidrs"]),
-                note=str(row["note"]),
-            )
-        )
-    return out
-
-
-def get_arp_spoof_target(conn: sqlite3.Connection, target_id: int) -> Optional[ArpSpoofTarget]:
-    row = conn.execute("SELECT * FROM arp_spoof_targets WHERE id = ?", (target_id,)).fetchone()
-    if not row:
-        return None
+def _arp_target_from_row(row: sqlite3.Row) -> ArpSpoofTarget:
     return ArpSpoofTarget(
         id=int(row["id"]),
         spoof_gateway_ip=str(row["spoof_gateway_ip"]),
@@ -613,7 +629,22 @@ def get_arp_spoof_target(conn: sqlite3.Connection, target_id: int) -> Optional[A
         policy_mode=str(row["policy_mode"]),
         policy_cidrs=str(row["policy_cidrs"]),
         note=str(row["note"]),
+        created_at=str(row["created_at"]) if "created_at" in row.keys() else "",
     )
+
+
+def list_arp_spoof_targets(conn: sqlite3.Connection) -> List[ArpSpoofTarget]:
+    out = []
+    for row in conn.execute("SELECT * FROM arp_spoof_targets ORDER BY id"):
+        out.append(_arp_target_from_row(row))
+    return out
+
+
+def get_arp_spoof_target(conn: sqlite3.Connection, target_id: int) -> Optional[ArpSpoofTarget]:
+    row = conn.execute("SELECT * FROM arp_spoof_targets WHERE id = ?", (target_id,)).fetchone()
+    if not row:
+        return None
+    return _arp_target_from_row(row)
 
 
 def list_arp_spoof_targets_enabled(conn: sqlite3.Connection) -> List[ArpSpoofTarget]:
@@ -633,8 +664,10 @@ def insert_arp_spoof_target(
     validate_ipv4(spoof_gateway_ip)
     cur = conn.execute(
         """
-        INSERT INTO arp_spoof_targets (spoof_gateway_ip, satellite_vrf, egress_iface, enabled, policy_mode, policy_cidrs, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO arp_spoof_targets (
+          spoof_gateway_ip, satellite_vrf, egress_iface, enabled, policy_mode, policy_cidrs, note, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         """,
         (spoof_gateway_ip.strip(), (satellite_vrf or "").strip(), egress_iface.strip(), 1 if enabled else 0, policy_mode.strip(), policy_cidrs.strip(), note),
     )
@@ -916,8 +949,16 @@ def upsert_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str, neighbor_ip: st
 
 
 def set_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str, neighbor_ip: str, role: str, note: str = "", update_source: Optional[str] = None) -> None:
-    """设置 BGP 邻居元数据（兼容旧调用方式）。"""
-    upsert_bgp_neighbor_meta(conn, vrf, neighbor_ip, role, note, source_ip=update_source or "")
+    """设置 BGP 邻居元数据；``update_source`` 无效时保留库内已有 TCP 源。"""
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    existing = get_bgp_neighbor_meta_map(conn, v).get(nip)
+    sip = str(existing[2] or "").strip() if existing and len(existing) > 2 else ""
+    if update_source is not None and is_usable_bgp_source_ip(update_source):
+        sip = validate_ipv4(update_source)
+    ar = int(existing[3]) if existing and len(existing) > 3 else 0
+    arf = str(existing[4] or "").strip() if existing and len(existing) > 4 else ""
+    upsert_bgp_neighbor_meta(conn, v, nip, role, note, source_ip=sip, advertise_routes=ar, advertise_routes_from=arf)
 
 
 def delete_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str, neighbor_ip: str) -> None:
@@ -937,6 +978,32 @@ def update_bgp_neighbor_advertise_routes(conn: sqlite3.Connection, vrf: str, nei
     conn.execute(
         "UPDATE bgp_neighbor_meta SET advertise_routes = ?, advertise_routes_from = ? WHERE vrf = ? AND neighbor_ip = ?",
         (ar, arf, v, nip)
+    )
+    conn.commit()
+
+
+def get_bgp_neighbor_store_received_routes(conn: sqlite3.Connection, vrf: str, neighbor_ip: str) -> int:
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    row = conn.execute(
+        "SELECT store_received_routes FROM bgp_neighbor_meta WHERE vrf = ? AND neighbor_ip = ?",
+        (v, nip),
+    ).fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row["store_received_routes"] or 0)
+    except (KeyError, TypeError):
+        return 0
+
+
+def update_bgp_neighbor_store_received_routes(conn: sqlite3.Connection, vrf: str, neighbor_ip: str, store_received_routes: int) -> None:
+    v = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    sr = 1 if store_received_routes else 0
+    conn.execute(
+        "UPDATE bgp_neighbor_meta SET store_received_routes = ? WHERE vrf = ? AND neighbor_ip = ?",
+        (sr, v, nip),
     )
     conn.commit()
 
@@ -1306,12 +1373,64 @@ def replace_bgp_learned_routes_for_peer(
         raise
 
 
+def route_window_for_bgp_role(role: str) -> str:
+    """本端邻居角色对应的 SQLite 学习窗（与 ``bgp_learned_routes.route_window`` 一致）。"""
+    r = (role or "").strip().lower()
+    if r == "downstream":
+        return "downstream"
+    return "upstream"
+
+
+def count_bgp_routes_for_peer_window(
+    conn: sqlite3.Connection,
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+) -> int:
+    vrf_n = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    rw = route_window_for_bgp_role(role)
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM bgp_learned_routes WHERE vrf = ? AND neighbor_ip = ? AND route_window = ?",
+        (vrf_n, nip, rw),
+    ).fetchone()
+    return int(row["c"] or 0) if row else 0
+
+
+def iter_bgp_routes_for_peer_window(
+    conn: sqlite3.Connection,
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    batch_size: int = 10000,
+):
+    """本窗缓存：该 VRF + 对端邻居 + 窗类型在库中学到的路由（定时同步快照）。"""
+    vrf_n = validate_vrf_name(vrf)
+    nip = validate_ipv4(neighbor_ip)
+    rw = route_window_for_bgp_role(role)
+    sql = (
+        "SELECT prefix, nexthop FROM bgp_learned_routes "
+        "WHERE vrf = ? AND neighbor_ip = ? AND route_window = ? ORDER BY prefix"
+    )
+    params = (vrf_n, nip, rw)
+    offset = 0
+    while True:
+        chunk = conn.execute(sql + " LIMIT ? OFFSET ?", params + (batch_size, offset)).fetchall()
+        if not chunk:
+            break
+        for row in chunk:
+            yield (str(row["prefix"]), str(row["nexthop"] or ""))
+        if len(chunk) < batch_size:
+            break
+        offset += batch_size
+
+
 def iter_bgp_routes_for_advertise_source(
     conn: sqlite3.Connection,
     source_spec: str,
     batch_size: int = 10000,
 ):
-    """解析通告来源：neighbor IP、``@upstream``、``@downstream``。"""
+    """解析通告来源：neighbor IP、``@upstream``、``@downstream``（遗留 API，新 UI 用 ``iter_bgp_routes_for_peer_window``）。"""
     spec = (source_spec or "").strip()
     if not spec:
         return
@@ -1928,7 +2047,11 @@ def _migrate_arp_spoof_targets(conn: sqlite3.Connection) -> None:
             try:
                 validate_ipv4(ip)
                 conn.execute(
-                    "INSERT OR IGNORE INTO arp_spoof_targets (spoof_gateway_ip, egress_iface, enabled, policy_mode) VALUES (?, '', 1, 'gateway_only')",
+                    """
+                    INSERT OR IGNORE INTO arp_spoof_targets (
+                      spoof_gateway_ip, egress_iface, enabled, policy_mode, created_at
+                    ) VALUES (?, '', 1, 'gateway_only', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                    """,
                     (ip,),
                 )
             except ValueError:

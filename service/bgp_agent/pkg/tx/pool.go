@@ -10,6 +10,7 @@ import (
 type Pool struct {
 	config   *Config
 	storage  Storage
+	handler  PeerRouteHandler
 	basePort uint16
 	mu       sync.RWMutex
 	agents   map[string]*TxAgent
@@ -20,13 +21,26 @@ func (p *Pool) GetOrCreateDefault(ctx context.Context) (*TxAgent, error) {
 	return p.getOrCreate(ctx, "default")
 }
 
-func NewPool(config *Config, store Storage, basePort uint16) *Pool {
+// GetAgent 返回已存在的 TX Agent（不创建）。
+func (p *Pool) GetAgent(vrf string) (*TxAgent, error) {
+	key := vrfKey(vrf)
+	p.mu.RLock()
+	a, ok := p.agents[key]
+	p.mu.RUnlock()
+	if !ok || a == nil {
+		return nil, fmt.Errorf("tx agent vrf %s not found", vrf)
+	}
+	return a, nil
+}
+
+func NewPool(config *Config, store Storage, basePort uint16, handler PeerRouteHandler) *Pool {
 	if basePort == 0 {
 		basePort = 1790
 	}
 	return &Pool{
 		config:   config,
 		storage:  store,
+		handler:  handler,
 		basePort: basePort,
 		agents:   make(map[string]*TxAgent),
 	}
@@ -66,7 +80,7 @@ func (p *Pool) getOrCreate(ctx context.Context, vrf string) (*TxAgent, error) {
 		return a, nil
 	}
 	cfg := *p.config
-	agent, err := NewTxAgent(&cfg, p.storage, p.portFor(vrf))
+	agent, err := NewTxAgent(&cfg, p.storage, p.portFor(vrf), key, p.handler)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +135,15 @@ func (p *Pool) WithdrawRoute(ctx context.Context, vrf, prefix string) error {
 		return nil
 	}
 	return agent.WithdrawRoute(ctx, prefix)
+}
+
+// ApplyRoutesBatch 在指定 VRF 的 TX 上批量通告或撤销。
+func (p *Pool) ApplyRoutesBatch(ctx context.Context, vrf string, routes []RouteOp, enable bool, defaultNH string) (added, failed int, errs []string) {
+	agent, err := p.getOrCreate(ctx, vrf)
+	if err != nil {
+		return 0, len(routes), []string{err.Error()}
+	}
+	return agent.ApplyRoutesBatch(ctx, routes, enable, defaultNH)
 }
 
 func (p *Pool) ListAllPeers(ctx context.Context) ([]PeerStatus, error) {

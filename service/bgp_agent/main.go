@@ -69,7 +69,7 @@ func main() {
 	txPool := tx.NewPool(&tx.Config{
 		LocalAS:  uint32(*localAs),
 		RouterID: *routerId,
-	}, store, 1790)
+	}, store, 1790, proc)
 	if _, err := txPool.GetOrCreateDefault(ctx); err != nil {
 		log.Printf("默认 TX 实例启动: %v", err)
 	}

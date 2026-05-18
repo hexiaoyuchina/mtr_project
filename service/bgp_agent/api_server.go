@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"bgp_agent/pkg/processor"
@@ -20,6 +21,9 @@ type APIServer struct {
 	txPool    *tx.Pool
 	storage   *storage.Storage
 	mux       *http.ServeMux
+
+	ribJobsMu sync.Mutex
+	ribJobs   map[string]*ribAdvertiseJob
 }
 
 // NewAPIServer 创建API服务器
@@ -50,6 +54,7 @@ func (s *APIServer) registerRoutes() {
 	s.mux.HandleFunc("/api/neighbors/remove", s.handleRemoveNeighbor)
 	s.mux.HandleFunc("/api/neighbors/toggle", s.handleNeighborToggle)
 	s.mux.HandleFunc("/api/rr/config", s.handleRRConfig)
+	s.mux.HandleFunc("/api/rr/toggle", s.handleRRToggle)
 	s.mux.HandleFunc("/api/rr/remove", s.handleRRRemove)
 	s.mux.HandleFunc("/api/routes", s.handleRoutes)
 	s.mux.HandleFunc("/api/routes/count", s.handleRouteCount)
@@ -61,6 +66,14 @@ func (s *APIServer) registerRoutes() {
 	s.mux.HandleFunc("/api/tx/learned-routes", s.handleTxLearnedRoutes)
 	s.mux.HandleFunc("/api/rr/routes", s.handleRRRoutes)
 	s.mux.HandleFunc("/api/peers/freeze-status", s.handlePeersFreezeStatus)
+	s.mux.HandleFunc("/api/rib/routes", s.handleRibRoutes)
+	s.mux.HandleFunc("/api/rib/routes/count", s.handleRibRoutesCount)
+	s.mux.HandleFunc("/api/rib/policy", s.handleRibPolicy)
+	s.mux.HandleFunc("/api/rib/ingest-peer", s.handleRibIngestPeer)
+	s.mux.HandleFunc("/api/rib/ingest-downstream", s.handleRibIngestDownstream)
+	s.mux.HandleFunc("/api/rib/advertise", s.handleRibAdvertise)
+	s.mux.HandleFunc("/api/rib/withdraw", s.handleRibWithdraw)
+	s.mux.HandleFunc("/api/rib/advertise/status", s.handleRibAdvertiseStatus)
 }
 
 func (s *APIServer) Start() error {
@@ -139,9 +152,8 @@ func (s *APIServer) handleUnfreeze(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.processor.SetRRConnected(true)
-	s.txPool.UnfreezeAll()
 	s.syncPeerFreezeState(r.Context())
+	s.txPool.UnfreezeAll()
 	s.writeJSON(w, map[string]interface{}{"ok": true, "message": "System unfrozen"})
 }
 

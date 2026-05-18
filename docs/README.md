@@ -4,7 +4,7 @@
 
 | 文档 | 说明 |
 |------|------|
-| **[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)** | **首选**：双向学/存/冻/搬、RX/TX、SQLite 与 Agent 分工 |
+| **[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)** | **首选**：RX/TX、Redis/RocksDB 百万 RIB、OP SQLite 快照、两扇窗 |
 | **[BGP_DATA_AND_API.md](./BGP_DATA_AND_API.md)** | SQLite 表字段、OP `:8808` 与 Agent `:9179` 接口 |
 | **[BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)** | 三网口分工（207 RR / 208 下游 / 109 管理） |
 | **[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)** | 编译、systemd、环境变量、验收清单 |

@@ -226,6 +226,55 @@
         font-size: 12px;
         vertical-align: top;
       }
+      .bgp-table-scroll {
+        margin-top: 16px;
+        max-width: 100%;
+        overflow-x: auto;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.12);
+        -webkit-overflow-scrolling: touch;
+      }
+      .bgp-table-scroll table {
+        margin-top: 0;
+        width: max-content;
+        min-width: 100%;
+      }
+      .bgp-table-scroll th,
+      .bgp-table-scroll td {
+        padding: 8px 10px;
+        white-space: nowrap;
+        vertical-align: middle;
+      }
+      .bgp-table-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: rgba(18, 22, 36, 0.98);
+      }
+      .bgp-table-scroll th.bgp-col-sticky,
+      .bgp-table-scroll td.bgp-col-sticky {
+        position: sticky;
+        right: 0;
+        z-index: 3;
+        background: rgba(16, 22, 38, 0.98);
+        box-shadow: -6px 0 10px rgba(0, 0, 0, 0.22);
+      }
+      .bgp-table-scroll thead th.bgp-col-sticky {
+        z-index: 4;
+      }
+      .bgp-act-btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: flex-end;
+        max-width: 132px;
+      }
+      .bgp-act-btns .btn {
+        padding: 4px 8px;
+        font-size: 11px;
+        min-width: 48px;
+      }
       .kpis {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -484,7 +533,7 @@
           </a>
           <a data-page="bgp-routes" href="#bgp-routes">
             <span class="mono" style="font-size: 11px">03</span>
-            <span>BGP 学习路由</span>
+            <span>BGP 路由</span>
           </a>
           <a data-page="rules" href="#rules">
             <span class="mono" style="font-size: 11px">04</span>
@@ -588,19 +637,16 @@
               <div class="hd">
                 <div class="h">BGP 邻居（GoBGP Agent RX/TX）</div>
                 <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
-                  <button type="button" class="btn" id="btnBgpRefresh">刷新</button>
-                  <button type="button" class="btn" id="btnBgpSyncMeta" title="从 bgp-agent 合并邻居到本地库并套用预设角色">同步元数据</button>
                   <label class="small" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none">
                     <input type="checkbox" id="bgpAutoRefresh" checked />
-                    自动刷新列表（每 15 秒，读 bgp-agent API）
+                    自动刷新（15 秒）；手动刷新请用顶栏「刷新」
                   </label>
                 </div>
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0; margin-bottom: 12px">
-                  下列表为<strong>本机全部 VRF</strong> 的邻居合并展示（数据来自 <span class="mono">bgp-agent</span> RX/TX + SQLite 元数据）。列含 VRF、对端 IP、AS、会话状态、前缀数、<strong>TCP 源</strong>（常与 ARP 引流「冒充网关 IPv4」一致）、角色、启停。
-                  <strong>双向搬运</strong>：上游窗（真 RR，本端 <span class="mono">207</span>）与下游窗（<span class="mono">vbgp*</span> 冒充身份）<strong>定时学路由入库</strong>；断链自动 <strong>freeze</strong> 保留快照。交叉通告：用「路由通告」选来源（<span class="mono">@upstream</span> / <span class="mono">@downstream</span> 或邻居 IP）向本行对端全量推送。
-                  <strong>RR</strong>：角色 RR，VRF 选 <span class="mono">gobgp-rr</span>（或角色 RR 时自动）。<strong>下游</strong>：先 ARP + 卫星 VRF，TCP 源为冒充 IP。网口：<span class="mono">docs/BGP_OP_NETWORK.md</span>。
+                  下列表为<strong>本机全部 VRF</strong> 的邻居（<span class="mono">bgp-agent</span>）。<strong>收/库</strong> 为会话收到 / 持久库条数；<strong>发送路由</strong> 为已向对端通告条数（会话 Established 后取 BGP 计数，开通告未建连时显示来源库条数）。三个开关：<strong>邻居启停</strong>（停 BGP 会话）、<strong>路由入库</strong>（把对端 IP 通告给本机的路由写入 Redis/RocksDB，RR/下游同一逻辑）、<strong>路由通告</strong>（以本行 TCP 源为出口，从持久库读出并通告给对端 IP）。查看明细请打开侧栏「BGP 路由」。
+                  <strong>RR</strong>：角色 RR，VRF 选 <span class="mono">gobgp-rr</span>（可添加多个上游 RR，如 153.204/205/206，本端 TCP 源统一为 153.200）。<strong>下游</strong>：先 ARP + 卫星 VRF，TCP 源为冒充 IP。网口：<span class="mono">docs/BGP_OP_NETWORK.md</span>。
                 </p>
                 <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end">
                   <div class="field" style="min-width: 280px">
@@ -631,7 +677,6 @@
                     <label>TCP 源（BGP update-source）</label>
                     <input id="bgpPeerSource" class="mono" list="bgpSourceIpList" placeholder="RR 填 139.159.43.207；卫星填冒充网关 IP" autocomplete="off" style="min-width: 200px" />
                     <datalist id="bgpSourceIpList"></datalist>
-                    <datalist id="bgpAdvSourceList"></datalist>
                   </div>
                   <div class="field">
                     <label title="仅当所选 VRF 尚无 router bgp 时使用；省略则使用后端默认 AS 或 MTR_BGP_ENSURE_LOCAL_AS">建仓本端 AS（可选）</label>
@@ -644,34 +689,28 @@
                   <button type="button" class="btn primary" id="btnBgpAdd">新增邻居</button>
                 </div>
 
-                <table style="margin-top: 16px">
+                <div class="bgp-table-scroll">
+                <table>
                   <thead>
                     <tr>
                       <th>VRF</th>
-                      <th>本端AS</th>
-                      <th>Neighbor</th>
-                      <th>V</th>
-                      <th>AS</th>
-                      <th>MsgRcvd</th>
-                      <th>MsgSent</th>
-                      <th>TblVer</th>
-                      <th>InQ</th>
-                      <th>OutQ</th>
-                      <th>TCP源</th>
+                      <th>本端 AS</th>
+                      <th>对端 AS</th>
+                      <th>对端 IP</th>
+                      <th>TCP 源</th>
                       <th>角色</th>
-                      <th>来源</th>
                       <th>状态</th>
-                      <th>Freeze</th>
-                      <th>库内路由</th>
-                      <th>PfxRcd</th>
-                      <th>Up/Down</th>
-                      <th>开关</th>
+                      <th>收/库</th>
+                      <th title="BGP 已向对端通告的前缀数；开通告且会话未计数时显示来源库条数">发送路由</th>
+                      <th>邻居启停</th>
+                      <th>路由入库</th>
                       <th>路由通告</th>
-                      <th>操作</th>
+                      <th class="bgp-col-sticky">操作</th>
                     </tr>
                   </thead>
                   <tbody id="bgpBody"></tbody>
                 </table>
+                </div>
               </div>
             </div>
           </div>
@@ -679,19 +718,15 @@
           <div class="page" data-page="bgp-routes">
             <div class="card">
               <div class="hd">
-                <div class="h">BGP 学习路由（SQLite 双向快照）</div>
+                <div class="h">BGP 路由（只读查询）</div>
                 <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
-                  <button type="button" class="btn" id="btnBrRefresh">刷新表格</button>
-                  <button type="button" class="btn primary" id="btnBrSync">立即同步</button>
-                  <label class="small" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none">
-                    <input type="checkbox" id="brAutoRefresh" checked />
-                    本页自动刷新（20 秒，仅请求 OP 读 SQLite）
-                  </label>
+                  <button type="button" class="btn" id="btnBrRefresh" title="刷新下拉选项与汇总 KPI">刷新</button>
                 </div>
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0; margin-bottom: 10px">
-                  <strong>本页只读 SQLite</strong>（<span class="mono">bgp_learned_routes</span>），由后台定时双向同步：上游窗（RR）与下游窗（<span class="mono">vbgp*</span>）。断链 peer 会 freeze，<strong>不删除</strong>库内已有前缀。
+                  本页<strong>仅查看</strong>持久库路由（<span class="mono">Redis + RocksDB</span>）。
+                  <strong>VRF</strong> 与 <strong>来源邻居 IP</strong> 为<strong>或</strong>关系（非必须同时选）：可只选其一、也可都选<strong>全部</strong>（不限制）；都选具体值时命中「该 VRF」<strong>或</strong>「该邻居 IP」的入库数据。点<strong>查询</strong>分页浏览。
                 </p>
                 <div class="row" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px" id="brWindowTabs">
                   <button type="button" class="btn primary" data-br-win="">全部</button>
@@ -752,6 +787,10 @@
                       <option value="200">200</option>
                       <option value="500">500</option>
                     </select>
+                  </div>
+                  <div class="field" style="align-self: flex-end">
+                    <label class="small">&nbsp;</label>
+                    <button type="button" class="btn primary" id="btnBrQuery">查询</button>
                   </div>
                 </div>
                 <div class="small mono" id="brSyncMeta" style="margin-bottom: 10px; color: var(--muted)">—</div>
@@ -1206,6 +1245,30 @@
       let brCurrentPage = 1;
       let brTotalPages = 1;
       let brActiveWindow = "";
+      let brPeerPairs = [];
+
+      function renderBrNeighborOptions() {
+        const ns = $("#brFilterNeighbor");
+        if (!ns) return;
+        const nPrev = ns.value;
+        const ips = [];
+        const seen = new Set();
+        brPeerPairs.forEach((p) => {
+          const ip = String(p.neighbor_ip || "").trim();
+          if (!ip || seen.has(ip)) return;
+          seen.add(ip);
+          ips.push(ip);
+        });
+        ips.sort();
+        ns.innerHTML = '<option value="">全部</option>';
+        ips.forEach((x) => {
+          const o = document.createElement("option");
+          o.value = x;
+          o.textContent = x;
+          ns.appendChild(o);
+        });
+        if ([...ns.options].some((op) => op.value === nPrev)) ns.value = nPrev;
+      }
 
       function stopBrRoutesPoll() {
         if (brRoutesPollTimer != null) {
@@ -1334,7 +1397,7 @@
         const meta = {
           dash: ["总览", "功能开关、服务状态与规则统计"],
           bgp: ["BGP 管理", "GoBGP Agent：邻居新增、启停与会话状态"],
-          "bgp-routes": ["BGP 学习路由", "SQLite 双向快照；上游/下游分窗；可按 VRF、邻居 IP 筛选"],
+          "bgp-routes": ["BGP 路由", "只读查询；VRF/邻居可选全部"],
           rules: ["逐跳替换规则", "目的 IP 由客户端 Echo 自动发现；探测命中 CIDR 则伪造 ICMP TE"],
           gateway: ["ARP 引流", "配置接口与冒充网关 IPv4（二层 ARP，独立 NFQUEUE）"],
           vpn: ["VPN 出口", "GRE / OpenVPN / L2TP 隧道进 vrf2103；策略路由与下发"],
@@ -1350,10 +1413,16 @@
         } else if (name === "bgp-routes") {
           stopBgpPoll();
           stopBrRoutesPoll();
+          brCurrentPage = 1;
           (async () => {
             await loadLearnedRouteFilters();
-            await loadLearnedRoutes();
-            startBrRoutesPoll();
+            const tbody = $("#brRoutesBody");
+            if (tbody) {
+              tbody.innerHTML =
+                '<tr><td colspan="11" class="small">VRF 与邻居 IP 为「或」筛选，可任选其一或都选「全部」；点击「查询」查看路由明细。</td></tr>';
+            }
+            const meta = $("#brSyncMeta");
+            if (meta) meta.textContent = "—";
           })();
         } else {
           stopBgpPoll();
@@ -1372,24 +1441,22 @@
       );
 
       $("#btnRefresh").addEventListener("click", async () => {
-        await refreshAll();
-        toast("已刷新");
+        const page = $(".page.show")?.dataset?.page;
+        if (page === "bgp") {
+          await refreshBGP();
+          toast("已刷新 BGP 邻居");
+        } else if (page === "bgp-routes") {
+          await brRefreshView();
+          toast("已刷新");
+        } else {
+          await refreshAll();
+          toast("已刷新");
+        }
       });
-      $("#btnBgpRefresh")?.addEventListener("click", () => refreshBGP());
       $("#bgpAutoRefresh")?.addEventListener("change", () => {
         if ($(".page.show")?.dataset?.page !== "bgp") return;
         if ($("#bgpAutoRefresh")?.checked) startBgpPoll();
         else stopBgpPoll();
-      });
-      $("#btnBgpSyncMeta")?.addEventListener("click", async () => {
-        try {
-          const j = await apiFetch("/api/bgp/sync-from-frr", { method: "POST" });
-          const extra = Array.isArray(j?.presets_applied) && j.presets_applied.length ? `（${j.presets_applied.join("，")}）` : "";
-          toast(`已从 bgp-agent 合并邻居并写入角色${extra}`);
-          await refreshBGP();
-        } catch (e) {
-          toast(`同步失败：${String(e).slice(0, 100)}`);
-        }
       });
       $("#bgpEdCancel")?.addEventListener("click", () => $("#dlgBgpEdit").close());
       $("#bgpEdSave")?.addEventListener("click", () => saveBgpEdit());
@@ -1401,10 +1468,23 @@
       $("#btnAddHopRule")?.addEventListener("click", () => addHopRule());
       $("#btnBgpAdd")?.addEventListener("click", () => addBgpNeighbor());
 
-      $("#btnBrRefresh")?.addEventListener("click", () => loadLearnedRoutes());
-      $("#brFilterVrf")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
-      $("#brFilterNeighbor")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
-      $("#brPageSize")?.addEventListener("change", () => { brCurrentPage = 1; loadLearnedRoutes(); });
+      async function brRefreshView() {
+        await loadLearnedRouteFilters();
+        brCurrentPage = 1;
+        await loadLearnedRoutes();
+      }
+
+      $("#btnBrRefresh")?.addEventListener("click", async () => {
+        await brRefreshView();
+        toast("已刷新选项与汇总");
+      });
+      $("#btnBrQuery")?.addEventListener("click", async () => {
+        brCurrentPage = 1;
+        await loadLearnedRoutes();
+      });
+      $("#brPageSize")?.addEventListener("change", () => {
+        brCurrentPage = 1;
+      });
       document.querySelectorAll("#brWindowTabs [data-br-win]").forEach((btn) => {
         btn.addEventListener("click", () => {
           brActiveWindow = btn.getAttribute("data-br-win") || "";
@@ -1420,26 +1500,6 @@
       $("#brPageNext")?.addEventListener("click", brGoNext);
       $("#brPageLast")?.addEventListener("click", brGoLast);
       $("#brPageGo")?.addEventListener("click", brGoJump);
-      $("#btnBrSync")?.addEventListener("click", async () => {
-        const b = $("#btnBrSync");
-        if (b) b.disabled = true;
-        try {
-          await apiFetch("/api/bgp/learned-routes/sync", { method: "POST" });
-          toast("已从 bgp-agent 同步到数据库");
-          await loadLearnedRouteFilters();
-          await loadLearnedRoutes();
-        } catch (e) {
-          toast(`同步失败：${String(e).slice(0, 100)}`);
-        } finally {
-          if (b) b.disabled = false;
-        }
-      });
-      $("#brAutoRefresh")?.addEventListener("change", () => {
-        if ($(".page.show")?.dataset?.page !== "bgp-routes") return;
-        if ($("#brAutoRefresh")?.checked) startBrRoutesPoll();
-        else stopBrRoutesPoll();
-      });
-
       function bgpRoleTag(role) {
         if (role === "upstream") return tag("warn", "上游运营商");
         if (role === "downstream") return tag("good", "下游运营商");
@@ -1578,7 +1638,7 @@
         try {
           const j = await apiFetch("/api/bgp/learned-routes/filter-options");
           const vrfs = Array.isArray(j.vrfs) ? j.vrfs : [];
-          const ips = Array.isArray(j.neighbor_ips) ? j.neighbor_ips : [];
+          brPeerPairs = Array.isArray(j.peer_pairs) ? j.peer_pairs : [];
           vs.innerHTML = '<option value="">全部</option>';
           vrfs.forEach((x) => {
             const o = document.createElement("option");
@@ -1586,14 +1646,8 @@
             o.textContent = String(x);
             vs.appendChild(o);
           });
-          ns.innerHTML = '<option value="">全部</option>';
-          ips.forEach((x) => {
-            const o = document.createElement("option");
-            o.value = String(x);
-            o.textContent = String(x);
-            ns.appendChild(o);
-          });
           if ([...vs.options].some((op) => op.value === vPrev)) vs.value = vPrev;
+          renderBrNeighborOptions();
           if ([...ns.options].some((op) => op.value === nPrev)) ns.value = nPrev;
           renderBrSummary(j.summary);
           renderBrPeerSnapshots(j.peer_snapshots);
@@ -1612,36 +1666,29 @@
             .replace(/"/g, "&quot;")
             .replace(/</g, "&lt;");
         const dsTips = {
-          rib_sqlite:
-            "读 SQLite 表 bgp_learned_routes。后台最近一次 RIB 同步成功时写入；页面与 API 均不实时查 FRR，仅读库。",
-          rib_sqlite_sync_failed:
-            "读 SQLite 表 bgp_learned_routes。最近一次后台 RIB 同步失败，为此前保留的快照，可能与当前 FRR 不一致。",
-          upstream_cache_sqlite:
-            "读 SQLite 表 bgp_upstream_route_cache 合并展示；当前学习 VRF 的 RIB 快照中已无此前缀（常见于上游断链后仍展示历史前缀）。",
+          rib_agent: "来自 bgp-agent Redis/RocksDB 按 peer 持久库，分页经 OP 代理查询。",
         };
         const dsLabel = (r) => {
-          const key = r.data_source || (r.stale ? "upstream_cache_sqlite" : "rib_sqlite");
-          const tip = dsTips[key] || "";
-          if (key === "rib_sqlite") return `<span class="small" title="${attrEsc(tip)}">${tag("good", "RIB 入库快照")}</span>`;
-          if (key === "rib_sqlite_sync_failed")
-            return `<span class="small" title="${attrEsc(tip)}">${tag("bad", "RIB·同步失败")}</span>`;
-          if (key === "upstream_cache_sqlite")
-            return `<span class="small" title="${attrEsc(tip)}">${tag("warn", "上游持久缓存")}</span>`;
+          const key = r.data_source || "rib_agent";
+          const tip = dsTips[key] || dsTips.rib_agent;
+          if (key === "rib_agent") return `<span class="small" title="${attrEsc(tip)}">${tag("good", "Agent RIB")}</span>`;
           return `<span class="small mono" title="${attrEsc(tip)}">${key}</span>`;
         };
+        const vf = ($("#brFilterVrf")?.value || "").trim();
+        const nip = ($("#brFilterNeighbor")?.value || "").trim();
+        const vfLabel = vf || "全部 VRF";
+        const nipLabel = nip || "全部邻居";
         try {
           const j = await apiFetch(learnedRoutesQueryPath());
-          const ok = j.last_sync_ok !== false && j.last_sync_ok !== 0;
-          if (meta) {
-            const err = (j.last_sync_error || "").trim();
-            meta.textContent = `上次同步: ${j.last_sync_at || "—"} · ${ok ? "成功" : "失败"}${err ? " · " + err.slice(0, 160) : ""}`;
-          }
-          renderBrSummary(j.summary);
-          renderBrPeerSnapshots(j.peer_snapshots);
           const routes = Array.isArray(j.routes) ? j.routes : [];
           const total = Number(j.total || 0);
           const page = Number(j.page || 1);
           const pageSize = Number(j.page_size || 100);
+          if (meta) {
+            meta.textContent = `数据源: Agent Redis/RocksDB · ${vfLabel} · ${nipLabel} · 共 ${total} 条 · 第 ${page} 页`;
+          }
+          renderBrSummary(j.summary);
+          renderBrPeerSnapshots(j.peer_snapshots);
           brCurrentPage = page;
           brTotalPages = Math.ceil(total / pageSize);
           routes.sort((a, b) => {
@@ -1654,7 +1701,7 @@
           if (!routes.length) {
             const winHint = brActiveWindow === "upstream" ? "上游窗" : brActiveWindow === "downstream" ? "下游窗" : "";
             tbody.innerHTML =
-              `<tr><td colspan="11" class="small">暂无${winHint ? winHint + " " : ""}数据：等待后台定时写入 SQLite，或点「立即同步」。</td></tr>`;
+              `<tr><td colspan="11" class="small">暂无${winHint ? winHint + " " : ""}数据：请在 BGP 管理页开启「路由入库」，等待写入持久库后再查询。</td></tr>`;
             updatePaginationUI();
             return;
           }
@@ -1716,7 +1763,6 @@
 
       async function loadBgpSourceHints() {
         const dl = $("#bgpSourceIpList");
-        const advDl = $("#bgpAdvSourceList");
         if (!dl) return;
         try {
           const j = await apiFetch("/api/bgp/neighbor-form-hints");
@@ -1727,17 +1773,6 @@
             o.value = String(ip);
             dl.appendChild(o);
           });
-          if (advDl) {
-            advDl.innerHTML = "";
-            const opts = Array.isArray(j?.advertise_source_options)
-              ? j.advertise_source_options
-              : ["@upstream", "@downstream"];
-            opts.forEach((s) => {
-              const o = document.createElement("option");
-              o.value = String(s);
-              advDl.appendChild(o);
-            });
-          }
           if (j?.local_as) {
             const las = Number(j.local_as);
             if ($("#bgpEnsureAs") && !$("#bgpEnsureAs").value) $("#bgpEnsureAs").value = String(las);
@@ -1896,7 +1931,7 @@
           (Array.isArray(vrfsApi) ? vrfsApi : []).forEach((x) => pushVrf(x.vrf, x.has_router_bgp));
           (satelliteVrfs?.vrfs || []).filter((v) => String(v).startsWith("vbgp")).forEach((v) => pushVrf(v, false));
           pushVrf("gobgp-rr", true);
-          
+
           await loadBgpSourceHints();
           const cur = (inp.value || "").trim();
           rebuildBgpVrfDatalist(cur);
@@ -1915,58 +1950,58 @@
           tbody.innerHTML = "";
           if (!Array.isArray(rows) || rows.length === 0) {
             tbody.innerHTML =
-              '<tr><td colspan="21" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
+              '<tr><td colspan="13" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
             return;
           }
           rows.forEach((r) => {
             const tr = document.createElement("tr");
             const advEnabled = Number(r.advertise_routes ?? 0) === 1;
-            const advFrom = r.advertise_routes_from || "";
+            const storeOn = Number(r.store_received_routes ?? 0) === 1;
+            const routesRx = Number(r.routes_received ?? r.pfx_rcd ?? 0);
+            const routesCached = Number(r.routes_cached ?? 0);
+            const routesTx = Number(r.routes_sent ?? r.pfx_adv ?? 0);
             tr.innerHTML = `
             <td class="mono">${r.vrf}</td>
             <td class="mono">${r.local_as ?? "—"}</td>
-            <td class="mono">${r.neighbor_ip}</td>
-            <td class="mono">${Number(r.neighbor_ver ?? 0)}</td>
             <td class="mono">${r.remote_as}</td>
-            <td class="mono">${Number(r.msg_rcvd ?? 0)}</td>
-            <td class="mono">${Number(r.msg_sent ?? 0)}</td>
-            <td class="mono">${Number(r.tbl_ver ?? 0)}</td>
-            <td class="mono">${Number(r.inq ?? 0)}</td>
-            <td class="mono">${Number(r.outq ?? 0)}</td>
+            <td class="mono">${r.neighbor_ip}</td>
             <td class="mono">${r.source_ip || "—"}</td>
             <td>${bgpRoleTag(r.role)}</td>
-            <td>${bgpRoleSrcLabel(r.role_source)}</td>
             <td>${bgpStateTag(r.session_state, r.enabled)}</td>
-            <td>${r.peer_frozen ? '<span class="tag warn">冻</span>' : '<span class="tag good">活</span>'}</td>
-            <td class="mono">${Number(r.routes_cached ?? 0)}</td>
-            <td class="mono">${Number(r.pfx_rcd || 0)}</td>
-            <td class="mono">${r.up_down || "—"}</td>
+            <td class="mono" title="会话收到 / 持久库条数">${routesRx} / ${routesCached}</td>
+            <td class="mono" title="已向对端通告的前缀数">${routesTx}</td>
             <td>
-              <label class="bgp-sw" title="邻居启停">
-                <input type="checkbox" ${r.enabled ? "checked" : ""} />
+              <label class="bgp-sw" title="邻居启停：关闭/开启 BGP 会话（admin shutdown）">
+                <input type="checkbox" class="bgp-neighbor-en-sw" ${r.enabled ? "checked" : ""} />
                 <span class="track"><span class="knob"></span></span>
-                <span class="cap">${r.enabled ? "开启" : "关闭"}</span>
+                <span class="cap neighbor-en-cap">${r.enabled ? "开" : "关"}</span>
               </label>
             </td>
-            <td>
-              <div class="row" style="gap: 4px; align-items: center; flex-wrap: nowrap;">
-                <label class="bgp-sw" title="路由通告开关" style="margin: 0">
-                  <input type="checkbox" class="adv-sw" ${advEnabled ? "checked" : ""} />
-                  <span class="track"><span class="knob"></span></span>
-                </label>
-                <input type="text" class="mono adv-from" value="${advFrom}" list="bgpAdvSourceList" placeholder="@upstream / @downstream" style="width: 120px; font-size: 11px" ${advEnabled ? "" : "disabled"} />
-                <button type="button" class="btn adv-apply" ${advEnabled && advFrom ? "" : "disabled"}>应用</button>
-              </div>
+            <td class="bgp-store-cell">
+              <label class="bgp-sw" title="路由入库：把对端 IP 通告给本机的路由写入 Redis/RocksDB；开启时从 ADJ-IN 全量灌库">
+                <input type="checkbox" class="store-sw" ${storeOn ? "checked" : ""} />
+                <span class="track"><span class="knob"></span></span>
+                <span class="cap store-cap">${storeOn ? "开" : "关"}</span>
+              </label>
             </td>
-            <td class="row" style="flex-wrap: nowrap; gap: 6px">
-              <button type="button" class="btn" data-act="bgp-ed">编辑</button>
-              <button type="button" class="btn danger" data-act="bgp-del">删除</button>
+            <td class="bgp-adv-cell">
+              <label class="bgp-sw" title="路由通告：从上游入库来源（本行 TCP 源 IP 对应 RR 持久库）读出，通告给本行对端 IP">
+                <input type="checkbox" class="adv-sw" ${advEnabled ? "checked" : ""} />
+                <span class="track"><span class="knob"></span></span>
+                <span class="cap adv-cap">${advEnabled ? "开" : "关"}</span>
+              </label>
+            </td>
+            <td class="bgp-col-sticky">
+              <div class="bgp-act-btns">
+                <button type="button" class="btn" data-act="bgp-ed">编辑</button>
+                <button type="button" class="btn danger" data-act="bgp-del">删除</button>
+              </div>
             </td>
           `;
             tr.querySelector('[data-act="bgp-ed"]').addEventListener("click", () => openBgpEdit(r));
             tr.querySelector('[data-act="bgp-del"]').addEventListener("click", () => deleteBgpNeighbor(r));
-            const sw = tr.querySelector("input[type=checkbox]");
-            const cap = tr.querySelector(".cap");
+            const sw = tr.querySelector(".bgp-neighbor-en-sw");
+            const cap = tr.querySelector(".neighbor-en-cap");
             sw.addEventListener("change", async () => {
               const want = !!sw.checked;
               sw.disabled = true;
@@ -1975,7 +2010,7 @@
                   method: "POST",
                   body: JSON.stringify({ enabled: want }),
                 });
-                if (cap) cap.textContent = want ? "开启" : "关闭";
+                if (cap) cap.textContent = want ? "开" : "关";
                 toast(want ? "已开启邻居（已下发 bgp-agent）" : "已关闭邻居（已下发 bgp-agent）");
                 await refreshBGP();
               } catch (e) {
@@ -1986,115 +2021,81 @@
               }
             });
 
-            const advSw = tr.querySelector(".adv-sw");
-            const advFromEl = tr.querySelector(".adv-from");
-            const advApply = tr.querySelector(".adv-apply");
-
-            advSw.addEventListener("change", async () => {
-              const wantAdv = !!advSw.checked;
-              advFromEl.disabled = !wantAdv;
-              if (!wantAdv) {
-                advApply.disabled = true;
-              } else if (advFromEl.value.trim()) {
-                advApply.disabled = false;
-              }
-            });
-
-            advFromEl.addEventListener("input", () => {
-              if (advFromEl.value.trim() && advSw.checked) {
-                advApply.disabled = false;
-              } else {
-                advApply.disabled = true;
-              }
-            });
-
-            advApply.addEventListener("click", async () => {
-              const wantAdv = !!advSw.checked;
-              const fromIp = (advFromEl.value || "").trim();
-              if (!fromIp) {
-                toast("请输入来源邻居IP");
-                return;
-              }
-              advApply.disabled = true;
-              advSw.disabled = true;
-              advFromEl.disabled = true;
+            const storeSw = tr.querySelector(".store-sw");
+            const storeCap = tr.querySelector(".store-cap");
+            storeSw.addEventListener("change", async () => {
+              const wantStore = !!storeSw.checked;
+              storeSw.disabled = true;
               try {
-                const result = await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/advertise`, {
-                  method: "POST",
-                  body: JSON.stringify({
-                    advertise_routes: wantAdv ? 1 : 0,
-                    advertise_routes_from: fromIp
-                  }),
-                });
-                const dir =
-                  r.vrf === "gobgp-rr" || r.role === "rr"
-                    ? "→ RR(RX)"
-                    : `→ ${r.vrf}(TX)`;
-                toast(`路由通告已${wantAdv ? "启用" : "禁用"}：${fromIp} ${dir}`);
-                
-                if (wantAdv) {
-                  advApply.textContent = "处理中...";
-                  await pollAdvertiseStatus(r.vrf, r.neighbor_ip, advApply, advSw, advFromEl);
-                }
-                
+                await apiFetch(
+                  `/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/store-routes`,
+                  { method: "POST", body: JSON.stringify({ store_received_routes: wantStore ? 1 : 0 }) }
+                );
+                if (storeCap) storeCap.textContent = wantStore ? "开" : "关";
+                toast(
+                  wantStore
+                    ? "已开启路由入库，正在将对端收到的路由写入持久库…"
+                    : "已关闭路由入库"
+                );
                 await refreshBGP();
               } catch (e) {
-                toast(`操作失败：${String(e).slice(0, 120)}`);
-                advApply.disabled = false;
-                advSw.disabled = false;
-                advFromEl.disabled = !advSw.checked;
+                storeSw.checked = !wantStore;
+                if (storeCap) storeCap.textContent = storeSw.checked ? "开" : "关";
+                toast(`入库开关失败：${String(e).slice(0, 120)}`);
+              } finally {
+                storeSw.disabled = false;
               }
             });
 
-            async function pollAdvertiseStatus(vrf, neighborIp, applyBtn, sw, fromInput) {
-              const maxAttempts = 240;
-              const pollInterval = 5000;
-              let attempts = 0;
-              
-              while (attempts < maxAttempts) {
-                try {
-                  const status = await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(vrf)}/${encodeURIComponent(neighborIp)}/advertise/status`);
-                  
-                  if (status.status === "completed") {
-                    applyBtn.textContent = "完成";
-                    toast(`路由通告完成：已通告 ${status.added}/${status.total_routes} 条路由`);
-                    break;
-                  } else if (status.status === "error") {
-                    applyBtn.textContent = "应用";
-                    toast(`路由通告失败：${status.message}`);
-                    break;
-                  } else if (status.status === "running") {
-                    if (status.progress > 0) {
-                      applyBtn.textContent = `${status.progress}%`;
-                    } else {
-                      applyBtn.textContent = "处理中";
+            const advSw = tr.querySelector(".adv-sw");
+            const advCap = tr.querySelector(".adv-cap");
+            advSw.addEventListener("change", async () => {
+              const wantAdv = !!advSw.checked;
+              advSw.disabled = true;
+              try {
+                await apiFetch(
+                  `/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/advertise`,
+                  { method: "POST", body: JSON.stringify({ advertise_routes: wantAdv ? 1 : 0 }) }
+                );
+                if (advCap) advCap.textContent = wantAdv ? "开" : "关";
+                toast(wantAdv ? "正在从持久库向对端通告路由…" : "正在撤销对端路由通告…");
+                for (let i = 0; i < 60; i++) {
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
+                  try {
+                    const st = await apiFetch(
+                      `/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/advertise/status`
+                    );
+                    if (st.status === "completed") {
+                      toast(st.message || (wantAdv ? "通告完成" : "已撤销"));
+                      break;
                     }
-                    if (status.message) {
-                      console.log(`Advertise progress: ${status.message}`);
+                    if (st.status === "error") {
+                      toast(`通告失败：${st.message || ""}`);
+                      advSw.checked = !wantAdv;
+                      if (advCap) advCap.textContent = advSw.checked ? "开" : "关";
+                      break;
                     }
-                  } else if (status.status === "idle") {
+                    if (st.status === "idle") break;
+                  } catch (_) {
                     break;
                   }
-                } catch (e) {
-                  console.log(`Poll error: ${e}`);
                 }
-                
-                attempts++;
-                await new Promise(resolve => setTimeout(resolve, pollInterval));
+                await refreshBGP();
+              } catch (e) {
+                advSw.checked = !wantAdv;
+                if (advCap) advCap.textContent = advSw.checked ? "开" : "关";
+                toast(`通告开关失败：${String(e).slice(0, 120)}`);
+              } finally {
+                advSw.disabled = false;
               }
-              
-              applyBtn.textContent = "应用";
-              sw.disabled = false;
-              fromInput.disabled = !sw.checked;
-              applyBtn.disabled = !(sw.checked && fromInput.value.trim());
-            }
+            });
 
             tbody.appendChild(tr);
           });
         } catch (e) {
           const tbody = $("#bgpBody");
           if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="21" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="13" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
           }
           toast(`BGP 列表加载失败：${String(e.message || e).slice(0, 80)}`);
         }

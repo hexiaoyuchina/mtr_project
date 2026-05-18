@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 
 	"bgp_agent/pkg/storage"
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/server"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -29,27 +31,38 @@ type Route = storage.Route
 
 // TxAgent GoBGP TX Agent，只负责向下游通告路由
 type TxAgent struct {
-	config      *Config
-	listenPort  uint16
-	server      *server.BgpServer
-	storage     Storage
-	neighbors   map[string]*api.Peer
-	neighborsMu sync.RWMutex
-	frozen      bool
-	frozenMu    sync.RWMutex
+	config        *Config
+	vrf           string
+	listenPort    uint16
+	server        *server.BgpServer
+	storage       Storage
+	handler       PeerRouteHandler
+	neighbors     map[string]*api.Peer
+	neighborsMu   sync.RWMutex
+	frozen        bool
+	frozenMu      sync.RWMutex
+	watchParent   context.Context
+	watchCancels  map[string]context.CancelFunc
+	watchMu       sync.Mutex
 }
 
 // NewTxAgent 创建TX Agent
-func NewTxAgent(config *Config, storage Storage, listenPort uint16) (*TxAgent, error) {
+func NewTxAgent(config *Config, storage Storage, listenPort uint16, vrf string, handler PeerRouteHandler) (*TxAgent, error) {
 	if listenPort == 0 {
 		listenPort = 1790
 	}
+	if vrf == "" {
+		vrf = "default"
+	}
 	return &TxAgent{
-		config:     config,
-		listenPort: listenPort,
-		storage:    storage,
-		neighbors:  make(map[string]*api.Peer),
-		frozen:     false,
+		config:       config,
+		vrf:          vrf,
+		listenPort:   listenPort,
+		storage:      storage,
+		handler:      handler,
+		neighbors:    make(map[string]*api.Peer),
+		watchCancels: make(map[string]context.CancelFunc),
+		frozen:       false,
 	}, nil
 }
 
@@ -60,6 +73,7 @@ func (a *TxAgent) Start(ctx context.Context) error {
 	go s.Serve()
 
 	a.server = s
+	a.watchParent = ctx
 
 	// 配置全局参数
 	if err := s.StartBgp(ctx, &api.StartBgpRequest{
@@ -122,21 +136,33 @@ func (a *TxAgent) AddNeighbor(ctx context.Context, addr string, asn uint32, loca
 
 	a.neighbors[addr] = peer
 	log.Printf("TX Agent添加下游邻居: %s AS%d local=%s", addr, asn, localAddress)
+	a.startPeerRouteWatch(a.watchParent, addr, asn)
 
 	return nil
 }
 
-// SetNeighborEnabled 启停邻居（对应 FRR neighbor shutdown）
+// SetNeighborEnabled 启停邻居（admin shutdown）。须带完整 Peer 配置，否则 GoBGP 会把 AS/Transport 清零。
 func (a *TxAgent) SetNeighborEnabled(ctx context.Context, addr string, enabled bool) error {
-	_, err := a.server.UpdatePeer(ctx, &api.UpdatePeerRequest{
-		Peer: &api.Peer{
-			Conf: &api.PeerConf{
-				NeighborAddress: addr,
-				AdminDown:       !enabled,
-			},
-		},
-	})
-	return err
+	a.neighborsMu.RLock()
+	cached, ok := a.neighbors[addr]
+	a.neighborsMu.RUnlock()
+	if !ok || cached == nil || cached.Conf == nil {
+		return fmt.Errorf("neighbor %s not found", addr)
+	}
+	peer := proto.Clone(cached).(*api.Peer)
+	peer.Conf.AdminDown = !enabled
+	if _, err := a.server.UpdatePeer(ctx, &api.UpdatePeerRequest{Peer: peer}); err != nil {
+		return err
+	}
+	a.neighborsMu.Lock()
+	if live, ok := a.neighbors[addr]; ok && live != nil && live.Conf != nil {
+		live.Conf.AdminDown = !enabled
+	}
+	a.neighborsMu.Unlock()
+	if enabled {
+		a.Unfreeze()
+	}
+	return nil
 }
 
 // ListPeers 列出本 TX 实例邻居及状态
@@ -156,9 +182,19 @@ func (a *TxAgent) ListPeers(ctx context.Context) ([]PeerStatus, error) {
 		if p.Transport != nil {
 			st.LocalAddress = p.Transport.LocalAddress
 		}
+		if st.LocalAddress == "" || st.LocalAddress == "0.0.0.0" {
+			a.neighborsMu.RLock()
+			if cached, ok := a.neighbors[st.Address]; ok && cached != nil && cached.Transport != nil {
+				if la := strings.TrimSpace(cached.Transport.LocalAddress); la != "" && la != "0.0.0.0" {
+					st.LocalAddress = la
+				}
+			}
+			a.neighborsMu.RUnlock()
+		}
 		for _, af := range p.AfiSafis {
 			if af.State != nil {
 				st.PfxRcd += uint32(af.State.Received)
+				st.PfxAdv += uint32(af.State.Advertised)
 			}
 		}
 		out = append(out, st)
@@ -178,6 +214,7 @@ func (a *TxAgent) RemoveNeighbor(ctx context.Context, addr string) error {
 	}
 
 	delete(a.neighbors, addr)
+	a.stopPeerRouteWatch(addr)
 	log.Printf("TX Agent删除下游邻居: %s", addr)
 
 	return nil
@@ -298,17 +335,31 @@ func (a *TxAgent) restoreRoutes(ctx context.Context) error {
 
 	log.Printf("从存储恢复 %d 条路由", len(routes))
 
+	ops := make([]RouteOp, 0, len(routes))
 	for _, route := range routes {
-		if err := a.AdvertiseRoute(ctx, route.Prefix, route.Nexthop); err != nil {
-			log.Printf("恢复路由失败 %s: %v", route.Prefix, err)
-		}
+		ops = append(ops, RouteOp{Prefix: route.Prefix, Nexthop: route.Nexthop})
 	}
-
+	defaultNH := a.config.RouterID
+	added, failed, errs := a.ApplyRoutesBatch(ctx, ops, true, defaultNH)
+	log.Printf("TX 恢复通告: added=%d failed=%d sample_err=%v", added, failed, firstErr(errs))
 	return nil
+}
+
+func firstErr(errs []string) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	return errs[0]
 }
 
 // Stop 停止TX Agent
 func (a *TxAgent) Stop() {
+	a.watchMu.Lock()
+	for _, cancel := range a.watchCancels {
+		cancel()
+	}
+	a.watchCancels = make(map[string]context.CancelFunc)
+	a.watchMu.Unlock()
 	if a.server != nil {
 		a.server.Stop()
 	}

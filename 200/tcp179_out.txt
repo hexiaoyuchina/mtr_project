@@ -1,0 +1,84 @@
+﻿python : D:\app\python3\lib\site-packages\paramiko\transport.py:32: CryptographyDeprecationWarning: Python 3.8 is no lo
+nger supported by the Python core team and support for it is deprecated in cryptography. The next release of cryptograp
+hy will remove support for Python 3.8.
+所在位置 C:\Users\Administrator\AppData\Local\Temp\ps-script-01dec8ec-455e-4418-a359-f3f9a325c6ac.ps1:114 字符: 32
++ ... ING='utf-8'; python d:\mtr_project\200\test_rr_tcp179.py 2>&1 | Out-F ...
++                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (D:\app\python3\...for Python 3.8.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  from cryptography.hazmat.backends import default_backend
+--- test TCP 179 to RR from 153.200 ---
+tcp179_fail
+0       0        10.133.153.200%vrf2103:179      10.133.153.204:48657           
+--- listen 179 ---
+LISTEN    0         4096               0.0.0.0:179              0.0.0.0:*        users:(("bgp_agent",pid=1824757,fd=14))                                        
+LISTEN    0         4096               0.0.0.0:1790             0.0.0.0:*        users:(("bgp_agent",pid=1824757,fd=16))                                        
+LISTEN    0         4096                  [::]:179                 [::]:*        users:(("bgp_agent",pid=1824757,fd=15))                                        
+LISTEN    0         4096                  [::]:1790                [::]:*        users:(("bgp_agent",pid=1824757,fd=17))                                        
+--- syn-sent ---
+--- restart rr peer on agent ---
+{"ok":true}
+{"local_address":"10.133.153.200","ok":true,"rr_addr":"10.133.153.204","rr_as":63199}
+ESTAB       0       0        10.133.153.204%iv204:41745   10.133.152.204:179     users:(("bgp_agent",pid=1824757,fd=28))                                        
+{"connected":false,"frozen":true,"rx_status":{"local_as":63199,"router_id":"10.133.153.200","rr_addr":"10.133.153.204","rr_as":63199,"rr_connected":false,"rr_state":"ACTIVE"}}
+
+May 17 20:35:43 cds bgp_agent[1824757]: 2026/05/17 20:35:43 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:43 cds bgp_agent[1824757]: 2026/05/17 20:35:43 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:43 cds bgp_agent[1824757]: 2026/05/17 20:35:43 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:43 cds bgp_agent[1824757]: 2026/05/17 20:35:43 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:43 cds bgp_agent[1824757]: time="2026-05-17T20:35:43+08:00" level=info msg="Add a peer configuration" Key=10.133.153.204 Topic=Peer
+May 17 20:35:43 cds bgp_agent[1824757]: 2026/05/17 20:35:43 RR杩炴帴鎭㈠锛岃В闄reeze
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 RR杩炴帴鏂紑锛岃繘鍏reeze妯″紡锛堜繚鎸佸綋鍓峈IB锛?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸插喕缁擄紝缁х画閫氬憡鐜版湁璺敱锛屼笉鎺ュ彈鏂版洿鏂?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸茶В鍐?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸茶В鍐?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸茶В鍐?
+May 17 20:35:47 cds bgp_agent[1824757]: 2026/05/17 20:35:47 TX Agent宸茶В鍐?
+
++ echo '--- test TCP 179 to RR from 153.200 ---'
++ timeout 2 bash -c ': > /dev/tcp/10.133.153.204/179'
++ echo tcp179_fail
++ grep 153.204
++ ss -tn state established '( dport = :179 or sport = :179 )'
++ grep 153.200
++ echo '--- listen 179 ---'
++ ss -lnpt
++ grep :179
++ echo '--- syn-sent ---'
++ grep 153.204
++ ss -tnp state syn-sent
++ true
++ echo '--- restart rr peer on agent ---'
++ curl -sf -X POST http://127.0.0.1:9179/api/rr/remove
++ curl -sf -X POST http://127.0.0.1:9179/api/rr/config -H 'Content-Type: application/json' -d '{"address":"10.133.153.204","remote_as":63199,"local_address":"10.133.153.200"}'
++ sleep 12
++ ss -tnp
++ grep -E '153.200|153.204'
++ grep 179
++ curl -s http://127.0.0.1:9179/api/rr/status
++ echo
++ journalctl -u bgp-agent -n 15 --no-pager
++ tail -15
+
+ROS enable:  
+Flags: X - disabled, E - established 
+
+ 0   name="peer-lin200-153" instance=default remote-address=10.133.153.200 
+
+     remote-as=63199 tcp-md5-key="" nexthop-choice=force-self multihop=no 
+
+     route-reflect=no hold-time=3m ttl=255 in-filter=lin200-153-in 
+
+     out-filter="" address-families=ip update-source=10.133.153.204 
+
+     default-originate=never remove-private-as=no as-override=no passive=no 
+
+     use-bfd=no 
+
+
+
+

@@ -9,5 +9,6 @@ type PeerStatus struct {
 	Session       string `json:"session"` // tx
 	State         string `json:"state"`
 	PfxRcd        uint32 `json:"pfx_rcd"`
+	PfxAdv        uint32 `json:"pfx_adv"`
 	Enabled       bool   `json:"enabled"`
 }

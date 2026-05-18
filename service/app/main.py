@@ -10,7 +10,7 @@ import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -274,6 +274,60 @@ def _bgp_ipvlan_reconcile_vrf_required(vrf_norm: str, peer_ip: Optional[str] = N
         raise HTTPException(status_code=503, detail={"code": "bgp_ipvlan_reconcile_failed", "result": r})
 
 
+def _arp_auto_satellite_vrf(spoof_ip: str, satellite_vrf: Optional[str], note: str) -> str:
+    """ARP 未填 satellite_vrf 时：备注含 BGPSAT 或开启 ipvlan 则自动 ``vbgp{去点 IP}``。"""
+    s = (satellite_vrf or "").strip()
+    if s:
+        return s
+    from .vrf_naming import satellite_vrf_name
+
+    if "BGPSAT" in (note or "").upper():
+        return satellite_vrf_name(spoof_ip)
+    if bgp_ipvlan_reconcile.enabled():
+        raw = (os.environ.get("MTR_AUTO_FILL_SATELLITE_VRF") or "1").strip().lower()
+        if raw not in {"", "0", "off", "false", "no"}:
+            return satellite_vrf_name(spoof_ip)
+    return ""
+
+
+def _arp_delete_remove_bgp_enabled() -> bool:
+    return os.environ.get("MTR_ARP_DELETE_REMOVE_BGP", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def _remove_bgp_neighbors_for_vrf(conn, vrf_norm: str) -> List[Dict[str, Any]]:
+    """删除卫星 VRF 下全部 Agent 邻居与 OP 元数据（删 ARP 引流时对称清理）。"""
+    removed: List[Dict[str, Any]] = []
+    meta_map = storage.get_bgp_neighbor_meta_map(conn, vrf_norm)
+    for nip in list(meta_map.keys()):
+        meta = meta_map.get(nip)
+        role = (meta[0] if meta else "unknown") or "unknown"
+        try:
+            if bgp_control.is_rr_role(role):
+                bgp_control.remove_rr(nip)
+            else:
+                bgp_control.remove_neighbor(vrf_norm, nip)
+        except Exception as e:
+            logger.warning("remove bgp neighbor %s/%s: %s", vrf_norm, nip, e)
+        storage.delete_bgp_neighbor_meta(conn, vrf_norm, nip)
+        storage.delete_bgp_learned_routes_by_neighbor_ip(conn, nip)
+        removed.append({"vrf": vrf_norm, "neighbor_ip": nip})
+    return removed
+
+
+def _arp_target_after_write_reconcile(conn, *, vrf_hint: str = "") -> None:
+    """ARP 写库后：卫星 VRF/ipvlan、主机 /32、若已有 BGP 邻居则补 VRF 路由与 DNAT。"""
+    if bgp_ipvlan_reconcile.enabled():
+        _bgp_ipvlan_reconcile_best_effort()
+    else:
+        _satellite_vrf_reconcile_best_effort()
+    _arp_reconcile_host_ip_best_effort()
+    vrf = (vrf_hint or "").strip()
+    if vrf and bgp_ipvlan_reconcile.enabled():
+        peer = storage.downstream_neighbor_ip_for_vrf(conn, vrf)
+        if peer:
+            _bgp_ipvlan_reconcile_vrf_best_effort(vrf, peer_ip=peer)
+
+
 def _satellite_vrf_prefix_str() -> str:
     p = (os.environ.get("MTR_SATELLITE_VRF_PREFIX") or "vbgp").strip()
     return p if p else "vbgp"
@@ -301,7 +355,7 @@ def _satellite_bgp_tcp_source_mode() -> str:
 
 
 def _resolve_satellite_bgp_source_ip(vrf_norm: str, body_source: Optional[str]) -> str:
-    """OP 省略 source_ip 时，卫星 VRF 在 underlay 模式下使用 veth 本端 ``10.255.x.1`` 作 FRR update-source。"""
+    """OP 省略 source_ip 时，卫星 VRF 在 underlay 模式下使用 veth 本端 ``10.255.x.1`` 作 BGP TCP 源。"""
     sip0 = (body_source or "").strip()
     if sip0:
         return sip0
@@ -456,7 +510,7 @@ class BgpVrfOut(BaseModel):
     local_as: int
     has_router_bgp: bool = Field(
         default=True,
-        description="若为 False：内核已有 VRF 设备但 FRR 尚无对应 ``router bgp … vrf …``，新增邻居时可自动建仓或先调 POST /api/bgp/instances",
+        description="若为 False：内核已有 VRF 设备但尚未通过 OP/Agent 使用该 VRF，可先 POST /api/bgp/instances 创建内核 VRF",
     )
 
 
@@ -491,8 +545,8 @@ class BgpNeighborIn(BaseModel):
     source_ip: Optional[str] = Field(
         default=None,
         description=(
-            "本端 TCP/BGP 源地址，下发 FRR ``neighbor … update-source …``；通常与 ARP 引流「冒充网关 IPv4」一致。"
-            "卫星 VRF（名前缀同 ``MTR_SATELLITE_VRF_PREFIX``，如 vbgp250）且 ``MTR_SATELLITE_BGP_TCP_SOURCE=underlay``（默认）时，"
+            "本端 TCP/BGP 源地址（GoBGP TX ``local_address`` / update-source）；通常与 ARP 引流「冒充网关 IPv4」一致。"
+            "卫星 VRF（名前缀同 ``MTR_SATELLITE_VRF_PREFIX``，如 vbgp10133152250）且 ``MTR_SATELLITE_BGP_TCP_SOURCE=underlay``（默认）时，"
             "省略本字段则自动使用卫星 veth 本端 ``10.255.x.1``，以便与 Linux 201 建连；显式填写则沿用该地址。"
         ),
     )
@@ -500,7 +554,7 @@ class BgpNeighborIn(BaseModel):
         default=None,
         ge=1,
         le=4294967295,
-        description="当所选 VRF 尚无 FRR ``router bgp`` 时，用该 AS 自动创建 BGP 实例；省略则用环境或非 default 实例的 AS",
+        description="当所选 VRF 尚无 GoBGP TX 实例时，用该 AS 创建内核 VRF（Agent 按 VRF 懒启动）；省略则用环境默认 AS",
     )
     bgp_router_id: Optional[str] = Field(
         default=None,
@@ -527,7 +581,7 @@ class BgpNeighborPatch(BaseModel):
 
     neighbor_ip: Optional[str] = Field(
         default=None,
-        description="若与 URL 中邻居 IP 不同，则在 FRR 中删旧邻、以新 IP 重建；未传的其它字段沿用当前值",
+        description="若与 URL 中邻居 IP 不同，则经 Agent 删旧邻、以新 IP 重建；未传的其它字段沿用当前值",
     )
     remote_as: Optional[int] = None
     role: Optional[str] = None
@@ -543,33 +597,32 @@ class BgpNeighborToggleIn(BaseModel):
 
 
 class BgpNeighborAdvertiseIn(BaseModel):
-    advertise_routes: int = Field(default=0, description="是否启用路由通告：0-禁用，1-启用")
-    advertise_routes_from: str = Field(default="", description="从哪个邻居IP学习路由")
+    advertise_routes: int = Field(default=0, ge=0, le=1, description="1=向对端通告本窗持久库路由，0=撤销")
+
+
+class BgpNeighborStoreIn(BaseModel):
+    store_received_routes: int = Field(
+        default=0, ge=0, le=1, description="1=将从对端收到的路由写入 Agent Redis/RocksDB"
+    )
 
 
 class BgpNeighborOut(BaseModel):
+    """BGP 管理列表与操作 API 使用的邻居摘要。"""
+
     vrf: str
     neighbor_ip: str
-    remote_as: int
-    role: str
-    role_source: str
-    note: str = ""
-    source_ip: str = ""
     local_as: int
-    enabled: bool
+    remote_as: int
+    source_ip: str = ""
+    role: str
     session_state: str
-    pfx_rcd: int
-    up_down: str
-    neighbor_ver: int = 0
-    msg_rcvd: int = 0
-    msg_sent: int = 0
-    tbl_ver: int = 0
-    inq: int = 0
-    outq: int = 0
-    advertise_routes: int = 0
-    advertise_routes_from: str = ""
-    peer_frozen: bool = False
-    routes_cached: int = 0
+    routes_received: int = Field(default=0, description="从对端收到的路由前缀数（BGP AFI/SAFI Received）")
+    routes_sent: int = Field(default=0, description="向对端通告的路由前缀数（BGP AFI/SAFI Advertised）")
+    enabled: bool = True
+    advertise_routes: int = Field(default=0, description="1=向对端通告本窗持久库路由（Agent Redis/RocksDB）")
+    store_received_routes: int = Field(default=0, description="1=持久化从对端收到的路由到 Agent")
+    routes_cached: int = Field(default=0, description="Agent 持久库中该 peer 路由条数")
+    note: str = Field(default="", description="运维备注（仅编辑弹窗使用，列表不展示）")
 
 
 class BgpLearnedRouteOut(BaseModel):
@@ -586,8 +639,8 @@ class BgpLearnedRouteOut(BaseModel):
     persisted: bool = True
     stale: bool = False
     data_source: str = Field(
-        default="rib_sqlite",
-        description="rib_sqlite=RIB 入库表；upstream_cache_sqlite=上游持久缓存合并；rib_sqlite_sync_failed=最近同步失败时表内旧行",
+        default="rib_agent",
+        description="rib_agent=Agent Redis/RocksDB；rib_sqlite=旧 SQLite 快照（兼容）",
     )
 
 
@@ -724,7 +777,14 @@ def _seed_bgp_neighbors_from_frr(conn: sqlite3.Connection) -> List[str]:
             src = str(row.get("local_address") or "")
             storage.ensure_bgp_neighbor_meta_row(conn, vrf, ip)
             if role != "unknown":
-                storage.set_bgp_neighbor_meta(conn, vrf, ip, role, "", update_source=src)
+                storage.set_bgp_neighbor_meta(
+                    conn,
+                    vrf,
+                    ip,
+                    role,
+                    "",
+                    update_source=src if storage.is_usable_bgp_source_ip(src) else None,
+                )
     except Exception:
         logger.exception("seed neighbors from gobgp agent")
     return storage.apply_bgp_db_presets(conn)
@@ -732,15 +792,6 @@ def _seed_bgp_neighbors_from_frr(conn: sqlite3.Connection) -> List[str]:
 
 def _bgp_role_hints() -> dict:
     return storage.default_bgp_role_hints()
-
-
-def _default_advertise_routes_from(role: str) -> str:
-    """交叉通告默认来源：RR 邻居 ← 下游窗；下游邻居 ← 上游窗。"""
-    if bgp_control.is_rr_role(role):
-        return "@downstream"
-    if bgp_control.is_downstream_role(role):
-        return "@upstream"
-    return "@upstream"
 
 
 def _resolve_bgp_role(conn: sqlite3.Connection, vrf: str, neighbor_ip: str) -> tuple[str, str]:
@@ -758,42 +809,187 @@ def _resolve_bgp_role(conn: sqlite3.Connection, vrf: str, neighbor_ip: str) -> t
     return "unknown", "unset"
 
 
+def _resolve_neighbor_source_ip(agent_row: Dict[str, Any], meta: Optional[tuple]) -> str:
+    """展示用 TCP 源：Agent 在邻居 shutdown 时常返回 0.0.0.0，回退 SQLite meta。"""
+    agent_src = str(agent_row.get("local_address") or "").strip()
+    meta_src = str(meta[2] or "").strip() if meta and len(meta) > 2 else ""
+    if storage.is_usable_bgp_source_ip(agent_src):
+        return agent_src
+    if storage.is_usable_bgp_source_ip(meta_src):
+        return meta_src
+    return meta_src or agent_src
+
+
+def _collect_learned_route_peers(
+    conn: sqlite3.Connection,
+    q_vrf: Optional[str] = None,
+    neighbor_ip: Optional[str] = None,
+    route_window: Optional[str] = None,
+) -> list[tuple[str, str, str]]:
+    """可查询的 (vrf, neighbor_ip, role)。
+
+    VRF 与邻居 IP 为**或**关系：只填其一则按该项筛选；两项都填则命中 VRF 或 邻居任一即纳入；
+    均为空（全部）时不做这两项限制。route_window 仍与二者为且关系。
+    """
+    rw_raw = (route_window or "").strip().lower() or None
+    if q_vrf:
+        q_vrf = storage.validate_vrf_name(q_vrf)
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str, str]] = []
+
+    def _matches_vrf_or_neighbor(v: str, ip: str) -> bool:
+        if not q_vrf and not neighbor_ip:
+            return True
+        if q_vrf and v == q_vrf:
+            return True
+        if neighbor_ip and ip == neighbor_ip:
+            return True
+        return False
+
+    def _add(v: str, ip: str, role: str) -> None:
+        if not ip:
+            return
+        if not _matches_vrf_or_neighbor(v, ip):
+            return
+        rw = storage.route_window_for_bgp_role(role)
+        if rw_raw and rw != rw_raw:
+            return
+        pair = (v, ip)
+        if pair in seen:
+            return
+        seen.add(pair)
+        out.append((v, ip, role))
+
+    for row in conn.execute(
+        "SELECT vrf, neighbor_ip, role FROM bgp_neighbor_meta ORDER BY vrf, neighbor_ip"
+    ):
+        v = storage.validate_vrf_name(str(row[0] or "default"))
+        try:
+            ip = storage.validate_ipv4(str(row[1] or ""))
+        except ValueError:
+            continue
+        role, _ = _resolve_bgp_role(conn, v, ip)
+        _add(v, ip, role)
+
+    rx = bgp_control.get_rr_rx_neighbor_row()
+    if rx:
+        v = bgp_control.GOBGP_VRF_RR
+        ip = str(rx.get("address") or "").strip()
+        if ip:
+            _add(v, ip, "rr")
+
+    for row in bgp_control.list_agent_neighbors():
+        v = storage.validate_vrf_name(str(row.get("vrf") or "default"))
+        if v == bgp_control.GOBGP_VRF_RR and str(row.get("session") or "").lower() != "rx":
+            continue
+        ip = str(row.get("address") or "").strip()
+        if not ip:
+            continue
+        role, _ = _resolve_bgp_role(conn, v, ip)
+        _add(v, ip, role)
+
+    out.sort()
+    return out
+
+
+def _iter_rr_meta_rows(conn: sqlite3.Connection):
+    for row in conn.execute(
+        "SELECT vrf, neighbor_ip, source_ip FROM bgp_neighbor_meta WHERE role = 'rr'"
+    ):
+        yield (
+            storage.validate_vrf_name(str(row["vrf"])),
+            storage.validate_ipv4(str(row["neighbor_ip"])),
+            {"source_ip": str(row["source_ip"] or "")},
+        )
+
+
+def _agent_neighbor_row(
+    conn: sqlite3.Connection, vrf_norm: str, neighbor_ip: str
+) -> Optional[Dict[str, Any]]:
+    """同一对端 IP 可存在于 default 与卫星 VRF，须按 vrf+ip 匹配 Agent 行。"""
+    nip = str(neighbor_ip).strip()
+    role, _ = _resolve_bgp_role(conn, vrf_norm, nip)
+    if bgp_control.is_rr_role(role) or vrf_norm == bgp_control.GOBGP_VRF_RR:
+        for rx in bgp_control.list_rr_rx_neighbor_rows():
+            if str(rx.get("address") or "").strip() == nip:
+                return rx
+        return None
+    for row in bgp_control.list_agent_neighbors():
+        if str(row.get("address") or "").strip() != nip:
+            continue
+        if str(row.get("session") or "").lower() == "rx":
+            continue
+        if storage.validate_vrf_name(str(row.get("vrf") or "default")) == vrf_norm:
+            return row
+    return None
+
+
+def _resolve_routes_sent(
+    conn: sqlite3.Connection,
+    vrf: str,
+    ip: str,
+    role: str,
+    row: Optional[Dict[str, Any]] = None,
+) -> int:
+    """发送路由数：优先 BGP 会话 Advertised；开通告且会话为 0 时用任务进度/来源持久库条数。"""
+    row = row or {}
+    meta = storage.get_bgp_neighbor_meta_map(conn, vrf).get(ip)
+    pfx_adv = int(row.get("pfx_adv") or 0)
+    ar = int(meta[3]) if meta and len(meta) > 3 else 0
+    if pfx_adv > 0:
+        return pfx_adv
+    if not ar:
+        return 0
+    task_id = f"{storage.validate_vrf_name(vrf)}-{storage.validate_ipv4(ip)}-advertise"
+    task = _ADVERTISE_TASKS.get(task_id)
+    if task:
+        st = str(task.get("status") or "")
+        added = int(task.get("added") or 0)
+        total = int(task.get("total_routes") or 0)
+        if st == "completed" and added > 0:
+            return added
+        if st == "running" and (added > 0 or total > 0):
+            return added if added > 0 else total
+    try:
+        from . import bgp_peer_rib
+
+        src_v, src_n, src_r = _advertise_rib_source(conn, vrf, ip, role)
+        return bgp_peer_rib.count_peer_rib_routes(src_v, src_n, src_r)
+    except Exception:
+        return 0
+
+
 def _neighbor_out_from_agent(conn: sqlite3.Connection, row: Dict[str, Any]) -> BgpNeighborOut:
     vrf = storage.validate_vrf_name(str(row.get("vrf") or "default"))
     ip = storage.validate_ipv4(str(row.get("address") or ""))
-    role, rs = _resolve_bgp_role(conn, vrf, ip)
+    role, _rs = _resolve_bgp_role(conn, vrf, ip)
     meta = storage.get_bgp_neighbor_meta_map(conn, vrf).get(ip)
     note = (meta[1] if meta else "") or ""
-    src = str(row.get("local_address") or "") or ((meta[2] if meta and len(meta) > 2 else "") or "")
+    src = _resolve_neighbor_source_ip(row, meta)
     ar = int(meta[3]) if meta and len(meta) > 3 else 0
-    arf = str(meta[4]) if meta and len(meta) > 4 else ""
-    if not arf.strip():
-        arf = _default_advertise_routes_from(role)
-    frozen = storage.is_bgp_peer_frozen(conn, vrf, ip)
-    rc = storage.count_routes_for_peer(conn, vrf, ip)
+    sr = storage.get_bgp_neighbor_store_received_routes(conn, vrf, ip)
+    cached = 0
+    try:
+        from . import bgp_peer_rib
+
+        cached = bgp_peer_rib.count_peer_rib_routes(vrf, ip, role)
+    except Exception:
+        cached = 0
     return BgpNeighborOut(
         vrf=vrf,
         neighbor_ip=ip,
         remote_as=int(row.get("remote_as") or bgp_control.default_local_as()),
         role=role,
-        role_source=rs,
         note=note,
         source_ip=src,
         local_as=int(bgp_control.default_local_as()),
         enabled=bool(row.get("enabled", True)),
         session_state=bgp_control.agent_row_to_state_label(str(row.get("state") or "")),
-        pfx_rcd=int(row.get("pfx_rcd") or 0),
-        up_down="—",
-        neighbor_ver=4,
-        msg_rcvd=0,
-        msg_sent=0,
-        tbl_ver=0,
-        inq=0,
-        outq=0,
+        routes_received=int(row.get("pfx_rcd") or 0),
+        routes_sent=_resolve_routes_sent(conn, vrf, ip, role, row),
         advertise_routes=ar,
-        advertise_routes_from=arf,
-        peer_frozen=frozen,
-        routes_cached=rc,
+        store_received_routes=sr,
+        routes_cached=cached,
     )
 
 
@@ -812,49 +1008,44 @@ def _bgp_add_neighbor_impl(conn: sqlite3.Connection, body: BgpNeighborIn) -> Bgp
     if bgp_control.is_rr_role(role):
         vrf_use = vrf_norm if vrf_norm not in ("", "default") else bgp_control.GOBGP_VRF_RR
         sip = (body.source_ip or "").strip() or (body.bgp_router_id or "").strip() or bgp_control.default_router_id()
-        existing_rr = bgp_control.find_rr_meta(conn)
-        if existing_rr and (existing_rr[0] != vrf_use or existing_rr[1] != ip):
-            old_vrf, old_ip = existing_rr[0], existing_rr[1]
-            try:
-                bgp_control.remove_rr()
-            except Exception as e:
-                logger.warning("replace rr remove old: %s", e)
-            storage.delete_bgp_neighbor_meta(conn, old_vrf, old_ip)
-        elif ip in storage.get_bgp_neighbor_meta_map(conn, vrf_use):
+        if ip in storage.get_bgp_neighbor_meta_map(conn, vrf_use):
             raise HTTPException(status_code=409, detail={"code": "neighbor_already_exists", "vrf": vrf_use, "neighbor_ip": ip})
         try:
             bgp_control.configure_rr(ip, int(body.remote_as), local_address=sip)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"gobgp_rr_failed: {e}") from e
-        bgp_control.clear_rr_meta_except(conn, vrf_use, ip)
         storage.set_bgp_neighbor_meta(conn, vrf_use, ip, role, "", update_source=sip)
-        storage.update_bgp_neighbor_advertise_routes(
-            conn, vrf_use, ip, 0, _default_advertise_routes_from(role)
-        )
-        for row in bgp_control.list_agent_neighbors():
-            if str(row.get("address")) == ip:
-                return _neighbor_out_from_agent(conn, row)
+        storage.update_bgp_neighbor_advertise_routes(conn, vrf_use, ip, 0, "")
+        for rx in bgp_control.list_rr_rx_neighbor_rows():
+            if str(rx.get("address") or "").strip() == ip:
+                return _neighbor_out_from_agent(conn, rx)
         return _neighbor_out_from_agent(
-            conn, {"vrf": vrf_use, "address": ip, "remote_as": body.remote_as, "state": "ACTIVE", "enabled": True}
+            conn,
+            {
+                "vrf": vrf_use,
+                "address": ip,
+                "remote_as": body.remote_as,
+                "state": "IDLE",
+                "enabled": True,
+                "local_address": sip,
+            },
         )
     sip = _resolve_satellite_bgp_source_ip(vrf_norm, body.source_ip)
     mh = _satellite_bgp_ebgp_multihop(vrf_norm)
     bind_if = ""
     passive = False
-    if _satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled():
-        bind_if = bgp_ipvlan_reconcile.ipvlan_iface_for_vrf(DB_PATH, vrf_norm) or ""
-        if sip and bgp_ipvlan_reconcile.is_rr_spoof_ip(sip):
-            passive = bgp_ipvlan_reconcile.rr_spoof_passive_enabled()
     _ensure_kernel_vrf_if_missing(vrf_norm, body.create_kernel_vrf_if_missing, body.kernel_rt_table)
-    for row in bgp_control.list_agent_neighbors():
-        if str(row.get("address")) == ip and storage.validate_vrf_name(str(row.get("vrf") or "default")) == vrf_norm:
-            raise HTTPException(status_code=409, detail={"code": "neighbor_already_exists", "vrf": vrf_norm, "neighbor_ip": ip})
+    if _agent_neighbor_row(conn, vrf_norm, ip):
+        raise HTTPException(status_code=409, detail={"code": "neighbor_already_exists", "vrf": vrf_norm, "neighbor_ip": ip})
     if _satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled():
         if not sip:
             raise HTTPException(status_code=400, detail="bgp_ipvlan_source_unknown")
         storage.ensure_bgp_neighbor_meta_row(conn, vrf_norm, ip)
         storage.set_bgp_neighbor_meta(conn, vrf_norm, ip, role, "", update_source=sip or "")
         _bgp_ipvlan_reconcile_vrf_required(vrf_norm, peer_ip=ip)
+        bind_if = bgp_ipvlan_reconcile.ipvlan_iface_for_vrf(DB_PATH, vrf_norm) or ""
+        if sip and bgp_ipvlan_reconcile.is_rr_spoof_ip(sip):
+            passive = bgp_ipvlan_reconcile.rr_spoof_passive_enabled()
     try:
         bgp_control.add_neighbor(
             vrf_norm,
@@ -868,17 +1059,16 @@ def _bgp_add_neighbor_impl(conn: sqlite3.Connection, body: BgpNeighborIn) -> Bgp
         )
         storage.set_bgp_neighbor_meta(conn, vrf_norm, ip, role, "", update_source=sip or "")
         storage.update_bgp_neighbor_advertise_routes(
-            conn, vrf_norm, ip, 0, _default_advertise_routes_from(role)
+            conn, vrf_norm, ip, 0, ""
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"gobgp_neighbor_failed: {e}") from e
     if sip and _satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled():
-        _bgp_ipvlan_reconcile_vrf_best_effort(vrf_norm, peer_ip=ip)
+        _bgp_ipvlan_reconcile_vrf_required(vrf_norm, peer_ip=ip)
     _arp_reconcile_host_ip_best_effort()
-    for row in bgp_control.list_agent_neighbors():
-        if str(row.get("address")) == ip:
-            row["vrf"] = vrf_norm
-            return _neighbor_out_from_agent(conn, row)
+    row = _agent_neighbor_row(conn, vrf_norm, ip)
+    if row:
+        return _neighbor_out_from_agent(conn, row)
     return _neighbor_out_from_agent(
         conn, {"vrf": vrf_norm, "address": ip, "remote_as": body.remote_as, "local_address": sip, "state": "Active", "enabled": True}
     )
@@ -1029,7 +1219,7 @@ def api_arp_spoof_targets_list():
                 policy_mode=r.policy_mode,
                 policy_cidrs=r.policy_cidrs,
                 note=r.note,
-                created_at="",
+                created_at=r.created_at or "",
             )
             for r in rows
         ]
@@ -1041,19 +1231,18 @@ def api_arp_spoof_targets_list():
 def api_arp_spoof_targets_post(body: ArpTargetIn):
     conn = _db()
     try:
+        sat_vrf = _arp_auto_satellite_vrf(body.spoof_gateway_ip, body.satellite_vrf, body.note or "")
         row_id = storage.insert_arp_spoof_target(
             conn,
             spoof_gateway_ip=body.spoof_gateway_ip,
-            satellite_vrf=body.satellite_vrf,
+            satellite_vrf=sat_vrf or body.satellite_vrf,
             egress_iface=body.egress_iface,
             enabled=body.enabled,
             policy_mode=body.policy_mode,
             policy_cidrs=body.policy_cidrs,
             note=body.note,
         )
-        _bgp_ipvlan_reconcile_best_effort()
-        _arp_reconcile_host_ip_best_effort()
-        _satellite_vrf_reconcile_best_effort()
+        _arp_target_after_write_reconcile(conn, vrf_hint=sat_vrf)
         _signal_arp_daemon_reload()
         row = storage.get_arp_spoof_target(conn, row_id)
         if not row:
@@ -1067,10 +1256,20 @@ def api_arp_spoof_targets_post(body: ArpTargetIn):
             policy_mode=row.policy_mode,
             policy_cidrs=row.policy_cidrs,
             note=row.note,
-            created_at="",
+            created_at=row.created_at or "",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except sqlite3.IntegrityError as e:
+        msg = str(e).lower()
+        if "unique" in msg or "spoof_gateway_ip" in msg:
+            raise HTTPException(status_code=409, detail="spoof_gateway_ip_already_exists") from e
+        if "created_at" in msg:
+            raise HTTPException(
+                status_code=500,
+                detail="arp_spoof_targets.created_at schema mismatch; redeploy OP app/storage.py and restart",
+            ) from e
+        raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
         conn.close()
 
@@ -1092,13 +1291,15 @@ def api_arp_spoof_targets_patch(rid: int, body: ArpTargetPatch):
         )
         if not ok:
             raise HTTPException(status_code=404, detail="not_found")
-        _bgp_ipvlan_reconcile_best_effort()
-        _arp_reconcile_host_ip_best_effort()
-        _satellite_vrf_reconcile_best_effort()
-        _signal_arp_daemon_reload()
         row = storage.get_arp_spoof_target(conn, rid)
         if not row:
             raise HTTPException(status_code=404, detail="not_found")
+        sat_vrf = _arp_auto_satellite_vrf(row.spoof_gateway_ip, row.satellite_vrf, row.note or "")
+        if sat_vrf and sat_vrf != (row.satellite_vrf or "").strip():
+            storage.update_arp_spoof_target(conn, rid, satellite_vrf=sat_vrf)
+            row = storage.get_arp_spoof_target(conn, rid) or row
+        _arp_target_after_write_reconcile(conn, vrf_hint=sat_vrf or (row.satellite_vrf or ""))
+        _signal_arp_daemon_reload()
         return ArpTargetOut(
             id=row.id,
             enabled=row.enabled,
@@ -1108,7 +1309,7 @@ def api_arp_spoof_targets_patch(rid: int, body: ArpTargetPatch):
             policy_mode=row.policy_mode,
             policy_cidrs=row.policy_cidrs,
             note=row.note,
-            created_at="",
+            created_at=row.created_at or "",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -1120,13 +1321,23 @@ def api_arp_spoof_targets_patch(rid: int, body: ArpTargetPatch):
 def api_arp_spoof_targets_delete(rid: int):
     conn = _db()
     try:
+        row = storage.get_arp_spoof_target(conn, rid)
+        if not row:
+            raise HTTPException(status_code=404, detail="not_found")
+        spoof_ip = row.spoof_gateway_ip
+        vrf_norm = (row.satellite_vrf or "").strip() or _arp_auto_satellite_vrf(
+            spoof_ip, row.satellite_vrf, row.note or ""
+        )
+        removed_bgp: List[Dict[str, Any]] = []
+        if vrf_norm and _arp_delete_remove_bgp_enabled() and _satellite_style_vrf_name(vrf_norm):
+            removed_bgp = _remove_bgp_neighbors_for_vrf(conn, vrf_norm)
         if not storage.delete_arp_spoof_target(conn, rid):
             raise HTTPException(status_code=404, detail="not_found")
-        _bgp_ipvlan_reconcile_best_effort()
-        _arp_reconcile_host_ip_best_effort()
-        _satellite_vrf_reconcile_best_effort()
+        _arp_target_after_write_reconcile(conn)
+        if not bgp_ipvlan_reconcile.enabled():
+            _satellite_vrf_reconcile_best_effort()
         _signal_arp_daemon_reload()
-        return {"ok": True}
+        return {"ok": True, "removed_bgp_neighbors": removed_bgp}
     finally:
         conn.close()
 
@@ -1233,11 +1444,49 @@ def api_bgp_neighbors_list(vrf: Optional[str] = Query(None)):
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"bgp_agent_unavailable: {e}") from e
         out: List[BgpNeighborOut] = []
+        seen_rr: set[str] = set()
         for row in rows:
             v = storage.validate_vrf_name(str(row.get("vrf") or "default"))
+            nip = str(row.get("address") or "").strip()
             if q and v != storage.validate_vrf_name(q):
                 continue
+            role, _ = _resolve_bgp_role(conn, v, nip) if nip else ("unknown", "unset")
+            sess = str(row.get("session") or "").lower()
+            if bgp_control.is_rr_role(role) or v == bgp_control.GOBGP_VRF_RR:
+                if sess != "rx":
+                    continue
+                if nip in seen_rr:
+                    continue
+                seen_rr.add(nip)
             out.append(_neighbor_out_from_agent(conn, row))
+        for vrf_m, nip_m, meta in _iter_rr_meta_rows(conn):
+            if nip_m in seen_rr:
+                continue
+            if q and vrf_m != storage.validate_vrf_name(q):
+                continue
+            rx_row = next(
+                (x for x in bgp_control.list_rr_rx_neighbor_rows() if str(x.get("address") or "").strip() == nip_m),
+                None,
+            )
+            if rx_row:
+                out.append(_neighbor_out_from_agent(conn, rx_row))
+            else:
+                out.append(
+                    _neighbor_out_from_agent(
+                        conn,
+                        {
+                            "vrf": vrf_m,
+                            "address": nip_m,
+                            "remote_as": meta.get("remote_as") or bgp_control.default_local_as(),
+                            "state": "IDLE",
+                            "enabled": True,
+                            "pfx_rcd": 0,
+                            "pfx_adv": 0,
+                            "local_address": meta.get("source_ip") or "",
+                        },
+                    )
+                )
+            seen_rr.add(nip_m)
         return out
     finally:
         conn.close()
@@ -1245,7 +1494,7 @@ def api_bgp_neighbors_list(vrf: Optional[str] = Query(None)):
 
 @app.post("/api/bgp/sync-from-frr")
 def api_bgp_sync_from_frr():
-    """从 GoBGP Agent 同步邻居到 meta，并写入预设角色（兼容旧 URL 名称）。"""
+    """从 bgp-agent 同步邻居到 SQLite meta，并写入预设角色（URL 保留 ``sync-from-frr`` 仅为兼容，不调用 vtysh/FRR）。"""
     conn = _db()
     try:
         applied = _seed_bgp_neighbors_from_frr(conn)
@@ -1282,7 +1531,7 @@ def api_bgp_neighbors_patch(vrf: str, neighbor_ip: str, body: BgpNeighborPatch):
         cur_note = meta[1] or ""
         cur_src = meta[2] if len(meta) > 2 else ""
         new_ip = storage.validate_ipv4(body.neighbor_ip) if body.neighbor_ip else ip
-        row = next((r for r in bgp_control.list_agent_neighbors() if str(r.get("address")) == ip), {})
+        row = _agent_neighbor_row(conn, vrf_norm, ip) or {}
         new_ras = int(body.remote_as) if body.remote_as is not None else int(row.get("remote_as") or bgp_control.default_local_as())
         new_role = body.role.strip().lower() if body.role else cur_role
         new_src = (body.source_ip or "").strip() if body.source_ip is not None else cur_src
@@ -1316,9 +1565,13 @@ def api_bgp_neighbors_delete(vrf: str, neighbor_ip: str):
         role = (meta[0] if meta else "unknown") or "unknown"
         if bgp_control.is_rr_role(role):
             try:
-                bgp_control.remove_rr()
+                bgp_control.remove_rr(nip)
             except Exception as e:
                 logger.warning("delete rr %s: %s", nip, e)
+            try:
+                bgp_control.remove_neighbor(bgp_control.GOBGP_VRF_RR, nip)
+            except Exception as e:
+                logger.debug("delete stray tx on gobgp-rr: %s", e)
         else:
             try:
                 bgp_control.remove_neighbor(vrf_norm, nip)
@@ -1326,6 +1579,8 @@ def api_bgp_neighbors_delete(vrf: str, neighbor_ip: str):
                 logger.warning("delete neighbor %s: %s", nip, e)
         storage.delete_bgp_neighbor_meta(conn, vrf_norm, nip)
         deleted_routes = storage.delete_bgp_learned_routes_by_neighbor_ip(conn, nip)
+        if _satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled():
+            _bgp_ipvlan_reconcile_vrf_best_effort(vrf_norm)
         return {"ok": True, "deleted_routes": deleted_routes}
     finally:
         conn.close()
@@ -1337,14 +1592,27 @@ def api_bgp_neighbors_toggle(vrf: str, neighbor_ip: str, body: BgpNeighborToggle
     try:
         vrf_norm = storage.validate_vrf_name(vrf)
         nip = storage.validate_ipv4(neighbor_ip)
+        meta = storage.get_bgp_neighbor_meta_map(conn, vrf_norm).get(nip)
+        role = (meta[0] if meta else "unknown") or "unknown"
         try:
-            bgp_control.set_neighbor_enabled(vrf_norm, nip, bool(body.enabled))
+            if bgp_control.is_rr_role(role):
+                sip = (meta[2] if meta and len(meta) > 2 else "") or bgp_control.default_router_id()
+                if body.enabled:
+                    ras = bgp_control.default_local_as()
+                    rx_row = bgp_control.get_rr_rx_neighbor_row()
+                    if rx_row and str(rx_row.get("address") or "").strip() == nip:
+                        ras = int(rx_row.get("remote_as") or ras)
+                    bgp_control.configure_rr(nip, ras, local_address=sip)
+                else:
+                    bgp_control.set_rr_enabled(nip, False)
+            else:
+                bgp_control.set_neighbor_enabled(vrf_norm, nip, bool(body.enabled))
         except Exception as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
-        for row in bgp_control.list_agent_neighbors():
-            if str(row.get("address")) == nip:
-                row["enabled"] = bool(body.enabled)
-                return _neighbor_out_from_agent(conn, row)
+        row = _agent_neighbor_row(conn, vrf_norm, nip)
+        if row:
+            row["enabled"] = bool(body.enabled)
+            return _neighbor_out_from_agent(conn, row)
         raise HTTPException(status_code=404, detail="neighbor_not_found")
     finally:
         conn.close()
@@ -1363,73 +1631,117 @@ class AdvertiseStatusOut(BaseModel):
 @app.post("/api/bgp/neighbors/{vrf}/{neighbor_ip}/advertise", response_model=BgpNeighborOut)
 async def api_bgp_neighbors_advertise(vrf: str, neighbor_ip: str, body: BgpNeighborAdvertiseIn):
     """
-    设置邻居的路由通告功能。
-    - advertise_routes: 0-禁用，1-启用
-    - advertise_routes_from: 从哪个邻居IP学习路由并通告给本邻居
+    路由通告开关：从 Agent 持久库读出路由并通告给本行对端。
+    下游 peer：默认读上游 RR 入库来源（本行 TCP 源 / ``10.133.153.204`` 等）再向 ``neighbor_ip`` 推送。
     """
     conn = _db()
     try:
         vrf_norm = storage.validate_vrf_name(vrf)
         ip = storage.validate_ipv4(neighbor_ip)
+        role, _rs = _resolve_bgp_role(conn, vrf_norm, ip)
 
-        storage.update_bgp_neighbor_advertise_routes(
-            conn, vrf_norm, ip, body.advertise_routes, body.advertise_routes_from
-        )
+        storage.update_bgp_neighbor_advertise_routes(conn, vrf_norm, ip, body.advertise_routes, "")
+
+        task_id = f"{vrf_norm}-{ip}-advertise"
+        async with _ADVERTISE_LOCK:
+            if task_id in _ADVERTISE_TASKS and _ADVERTISE_TASKS[task_id].get("status") == "running":
+                raise HTTPException(status_code=409, detail="advertise_task_running")
+            _ADVERTISE_TASKS.pop(task_id, None)
+
+        from . import bgp_peer_rib
 
         if body.advertise_routes:
-            # 启动异步路由通告任务
-            # 当advertise_routes_from为空时，会自动从数据库查找路由来源
-            task_id = f"{vrf_norm}-{ip}-advertise"
+            src_v, src_n, src_r = _advertise_rib_source(conn, vrf_norm, ip, role)
+            cached = bgp_peer_rib.count_peer_rib_routes(src_v, src_n, src_r)
             async with _ADVERTISE_LOCK:
-                if task_id in _ADVERTISE_TASKS:
-                    if _ADVERTISE_TASKS[task_id]["status"] == "running":
-                        logger.info(f"Advertise task already running: {task_id}")
-                    else:
-                        _ADVERTISE_TASKS.pop(task_id, None)
-
                 _ADVERTISE_TASKS[task_id] = {
                     "status": "running",
                     "progress": 0,
-                    "total_routes": 0,
+                    "total_routes": cached,
                     "added": 0,
-                    "message": "Starting... (auto-discovering route sources)"
+                    "message": f"通告本窗缓存 {cached} 条…",
                 }
-
-            asyncio.create_task(_async_apply_bgp_route_advertise(vrf_norm, ip, body.advertise_routes_from or "", task_id))
+            asyncio.create_task(_async_apply_bgp_peer_cache_advertise(vrf_norm, ip, role, task_id))
         else:
-            # 禁用路由通告
-            task_id = f"{vrf_norm}-{ip}-advertise"
+            src_v, src_n, src_r = _advertise_rib_source(conn, vrf_norm, ip, role)
+            cached = bgp_peer_rib.count_peer_rib_routes(src_v, src_n, src_r)
             async with _ADVERTISE_LOCK:
-                if task_id in _ADVERTISE_TASKS:
-                    _ADVERTISE_TASKS.pop(task_id, None)
-            logger.info(f"Advertise task disabled: {task_id}")
+                _ADVERTISE_TASKS[task_id] = {
+                    "status": "running",
+                    "progress": 0,
+                    "total_routes": cached,
+                    "added": 0,
+                    "message": f"撤销来自 {src_n} 的 {cached} 条通告…",
+                }
+            asyncio.create_task(_async_withdraw_bgp_peer_cache_advertise(vrf_norm, ip, role, task_id))
+            logger.info("advertise disabled vrf=%s peer=%s", vrf_norm, ip)
 
         for row in bgp_control.list_agent_neighbors():
             if str(row.get("address")) == ip and storage.validate_vrf_name(
                 str(row.get("vrf") or "default")
             ) == vrf_norm:
                 return _neighbor_out_from_agent(conn, row)
-        role2, rs = _resolve_bgp_role(conn, vrf_norm, ip)
+        role2, _rs = _resolve_bgp_role(conn, vrf_norm, ip)
         meta_t = storage.get_bgp_neighbor_meta_map(conn, vrf_norm).get(ip)
         note_t = (meta_t[1] if meta_t else "") or ""
         src_t = (meta_t[2] if meta_t and len(meta_t) > 2 else "") or ""
         ar_t = int(meta_t[3]) if meta_t and len(meta_t) > 3 else body.advertise_routes
-        arf_t = str(meta_t[4]) if meta_t and len(meta_t) > 4 else (body.advertise_routes_from or "")
+        sent = 0
+        if ar_t:
+            try:
+                src_v, src_n, src_r = _advertise_rib_source(conn, vrf_norm, ip, role2)
+                sent = bgp_peer_rib.count_peer_rib_routes(src_v, src_n, src_r)
+            except Exception:
+                sent = 0
         return BgpNeighborOut(
             vrf=vrf_norm,
             neighbor_ip=ip,
             remote_as=bgp_control.default_local_as(),
             role=role2,
-            role_source=rs,
             note=note_t,
             source_ip=src_t,
             local_as=bgp_control.default_local_as(),
             enabled=True,
             session_state="Unknown",
-            pfx_rcd=0,
-            up_down="—",
+            routes_received=0,
+            routes_sent=sent,
             advertise_routes=ar_t,
-            advertise_routes_from=arf_t,
+        )
+    finally:
+        conn.close()
+
+
+@app.post("/api/bgp/neighbors/{vrf}/{neighbor_ip}/store-routes", response_model=BgpNeighborOut)
+async def api_bgp_neighbors_store_routes(vrf: str, neighbor_ip: str, body: BgpNeighborStoreIn):
+    """开关：是否将从对端收到的路由持久化到 Agent（Redis/RocksDB）。"""
+    from . import bgp_peer_rib
+
+    conn = _db()
+    try:
+        vrf_norm = storage.validate_vrf_name(vrf)
+        ip = storage.validate_ipv4(neighbor_ip)
+        role, _ = _resolve_bgp_role(conn, vrf_norm, ip)
+        storage.ensure_bgp_neighbor_meta_row(conn, vrf_norm, ip)
+        storage.update_bgp_neighbor_store_received_routes(conn, vrf_norm, ip, body.store_received_routes)
+        await _run_blocking_call(
+            bgp_peer_rib.sync_peer_rib_policy, vrf_norm, ip, role, body.store_received_routes
+        )
+        if body.store_received_routes:
+            await _run_blocking_call(bgp_peer_rib.ingest_peer_routes, vrf_norm, ip, role)
+        for row in bgp_control.list_agent_neighbors():
+            if str(row.get("address")) == ip and storage.validate_vrf_name(
+                str(row.get("vrf") or "default")
+            ) == vrf_norm:
+                return _neighbor_out_from_agent(conn, row)
+        return BgpNeighborOut(
+            vrf=vrf_norm,
+            neighbor_ip=ip,
+            remote_as=bgp_control.default_local_as(),
+            role=role,
+            local_as=bgp_control.default_local_as(),
+            enabled=True,
+            session_state="Unknown",
+            store_received_routes=body.store_received_routes,
         )
     finally:
         conn.close()
@@ -1460,91 +1772,176 @@ async def api_bgp_neighbors_advertise_status(vrf: str, neighbor_ip: str):
         )
 
 
-async def _async_apply_bgp_route_advertise(vrf: str, target_neighbor: str, source_neighbor_ip: str, task_id: str):
-    """异步交叉通告：目标为 RR 走 RX，目标为卫星 VRF 走 TX；来源支持邻居 IP 或 @upstream/@downstream。"""
+def _advertise_target_is_rr(conn: sqlite3.Connection, vrf_norm: str, target_neighbor: str, role: str) -> bool:
+    if vrf_norm == bgp_control.GOBGP_VRF_RR:
+        return True
+    if bgp_control.is_rr_role(role):
+        return True
+    meta_row = storage.get_bgp_neighbor_meta_map(conn, vrf_norm).get(target_neighbor)
+    return bool(meta_row and bgp_control.is_rr_role(str(meta_row[0] or "")))
+
+
+def _default_rr_neighbor_ip(conn: sqlite3.Connection) -> str:
+    env_rr = (os.environ.get("RR_ADDR") or "").strip()
+    if env_rr:
+        return storage.validate_ipv4(env_rr)
+    for nip, meta in storage.get_bgp_neighbor_meta_map(conn, bgp_control.GOBGP_VRF_RR).items():
+        if meta and bgp_control.is_rr_role(str(meta[0] or "")):
+            return storage.validate_ipv4(nip)
+    raise ValueError("no RR neighbor configured")
+
+
+def _advertise_rib_source(
+    conn: sqlite3.Connection, vrf_norm: str, target_neighbor: str, role: str
+) -> Tuple[str, str, str]:
+    """读持久库用的 (vrf, neighbor_ip, role)。下游默认取上游 RR 入库来源（TCP 源 IP 对应 peer）。"""
+    if _advertise_target_is_rr(conn, vrf_norm, target_neighbor, role):
+        return vrf_norm, target_neighbor, role
+
+    meta = storage.get_bgp_neighbor_meta_map(conn, vrf_norm).get(target_neighbor)
+    from_spec = str(meta[4] or "").strip() if meta and len(meta) > 4 else ""
+    if from_spec:
+        low = from_spec.lower()
+        if low in {"@upstream", "upstream", "rr"}:
+            return bgp_control.GOBGP_VRF_RR, _default_rr_neighbor_ip(conn), "rr"
+        if low not in {"@downstream", "downstream"}:
+            try:
+                return bgp_control.GOBGP_VRF_RR, storage.validate_ipv4(from_spec), "rr"
+            except ValueError:
+                pass
+
+    source_ip = str(meta[2] or "").strip() if meta and len(meta) > 2 else ""
+    if source_ip:
+        return bgp_control.GOBGP_VRF_RR, storage.validate_ipv4(source_ip), "rr"
+
+    return bgp_control.GOBGP_VRF_RR, _default_rr_neighbor_ip(conn), "rr"
+
+
+async def _poll_agent_rib_advertise_job(
+    task_id: str,
+    src_vrf: str,
+    src_nip: str,
+    src_role: str,
+    vrf_norm: str,
+    target_neighbor: str,
+    target_to_rr: bool,
+    *,
+    enable: bool,
+    poll_interval: float = 1.5,
+    timeout_s: float = 7200.0,
+) -> None:
+    """Agent 流式通告/撤销：IteratePeerRoutes + 批量 AddPath，OP 仅轮询进度。"""
+    from . import bgp_peer_rib
+
+    src_window = storage.route_window_for_bgp_role(src_role)
+    target = "rr" if target_to_rr else "tx"
+    target_vrf = vrf_norm if not target_to_rr else ""
+
+    await _run_blocking_call(
+        bgp_peer_rib.start_rib_advertise_job,
+        task_id,
+        src_window,
+        src_vrf,
+        src_nip,
+        target=target,
+        target_vrf=target_vrf,
+        enable=enable,
+    )
+
+    import time
+
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout_s:
+        st = await _run_blocking_call(bgp_peer_rib.get_rib_advertise_status, task_id)
+        status = str(st.get("status") or "")
+        total = int(st.get("total_routes") or 0)
+        processed = int(st.get("processed") or 0)
+        added = int(st.get("added") or 0)
+        progress = int(st.get("progress") or 0)
+        message = str(st.get("message") or "")
+
+        async with _ADVERTISE_LOCK:
+            if task_id in _ADVERTISE_TASKS:
+                if total:
+                    _ADVERTISE_TASKS[task_id]["total_routes"] = total
+                _ADVERTISE_TASKS[task_id]["progress"] = progress
+                _ADVERTISE_TASKS[task_id]["added"] = added
+                _ADVERTISE_TASKS[task_id]["message"] = message or (
+                    f"{'通告' if enable else '撤销'} {processed}/{total or '?'}"
+                )
+
+        if status in {"completed", "error"}:
+            async with _ADVERTISE_LOCK:
+                if task_id in _ADVERTISE_TASKS:
+                    _ADVERTISE_TASKS[task_id]["status"] = status
+                    if status == "completed":
+                        _ADVERTISE_TASKS[task_id]["progress"] = 100
+                    _ADVERTISE_TASKS[task_id]["message"] = message
+            if status == "error":
+                raise RuntimeError(message or "rib_advertise_failed")
+            return
+
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(f"rib advertise job timeout after {timeout_s}s")
+
+
+async def _async_apply_bgp_peer_cache_advertise(
+    vrf: str, target_neighbor: str, role: str, task_id: str
+) -> None:
+    """从持久库（下游默认上游 RR 来源）读出路由，通告给目标对端（Agent 流式任务）。"""
+    from . import bgp_peer_rib
+
     try:
         conn = _db()
         try:
             vrf_norm = storage.validate_vrf_name(vrf)
-            meta_row = storage.get_bgp_neighbor_meta_map(conn, vrf_norm).get(target_neighbor)
-            target_to_rr = vrf_norm == bgp_control.GOBGP_VRF_RR
-            if meta_row and bgp_control.is_rr_role(str(meta_row[0] or "")):
-                target_to_rr = True
-            source_spec = (source_neighbor_ip or "").strip()
-            if not source_spec:
-                env = bgp_control.agent_env_config()
-                source_spec = "@downstream" if target_to_rr else (env.get("rr_addr") or "@upstream")
-
-            total_routes_count = 0
-            for _pfx, _nh in storage.iter_bgp_routes_for_advertise_source(conn, source_spec, batch_size=50000):
-                total_routes_count += 1
-                if total_routes_count >= 2_000_000:
-                    break
+            target_to_rr = _advertise_target_is_rr(conn, vrf_norm, target_neighbor, role)
+            src_vrf, src_nip, src_role = _advertise_rib_source(conn, vrf_norm, target_neighbor, role)
+            total_routes_count = await _run_blocking_call(
+                bgp_peer_rib.count_peer_rib_routes, src_vrf, src_nip, src_role
+            )
 
             async with _ADVERTISE_LOCK:
                 if task_id in _ADVERTISE_TASKS:
                     _ADVERTISE_TASKS[task_id]["total_routes"] = total_routes_count
                     _ADVERTISE_TASKS[task_id]["message"] = (
-                        f"来源 {source_spec} 共 {total_routes_count} 条 → "
-                        f"{'RR(RX)' if target_to_rr else f'TX {vrf_norm}'}"
+                        f"来源 {src_vrf}/{src_nip} 共 {total_routes_count} 条 → "
+                        f"{'RR(RX)' if target_to_rr else f'TX {vrf_norm}→{target_neighbor}'}"
                     )
 
             if total_routes_count == 0:
                 async with _ADVERTISE_LOCK:
                     if task_id in _ADVERTISE_TASKS:
                         _ADVERTISE_TASKS[task_id]["status"] = "completed"
-                        _ADVERTISE_TASKS[task_id]["message"] = f"No routes for source {source_spec}"
+                        _ADVERTISE_TASKS[task_id]["message"] = (
+                            f"来源 {src_vrf}/{src_nip} 无路由，请先在 RR 侧打开路由入库"
+                        )
                 return
 
-            batch_size = 10000
-            routes_batch: list = []
-            total_added = 0
-            processed = 0
-
-            for prefix, nexthop in storage.iter_bgp_routes_for_advertise_source(conn, source_spec, batch_size):
-                routes_batch.append((prefix, nexthop))
-                if len(routes_batch) >= batch_size:
-                    if target_to_rr:
-                        result = await _run_blocking_call(
-                            bgp_control.add_bgp_networks_batch_to_rr, list(routes_batch)
-                        )
-                    else:
-                        result = await _run_blocking_call(
-                            bgp_control.add_bgp_networks_batch, vrf_norm, list(routes_batch)
-                        )
-                    total_added += int(result.get("added") or 0)
-                    processed += len(routes_batch)
-                    routes_batch = []
-                    async with _ADVERTISE_LOCK:
-                        if task_id in _ADVERTISE_TASKS and total_routes_count:
-                            _ADVERTISE_TASKS[task_id]["progress"] = min(
-                                99, int((processed / total_routes_count) * 100)
-                            )
-                            _ADVERTISE_TASKS[task_id]["added"] = total_added
-                            _ADVERTISE_TASKS[task_id]["message"] = f"已处理 {processed}/{total_routes_count}"
-
-            if routes_batch:
-                if target_to_rr:
-                    result = await _run_blocking_call(bgp_control.add_bgp_networks_batch_to_rr, routes_batch)
-                else:
-                    result = await _run_blocking_call(bgp_control.add_bgp_networks_batch, vrf_norm, routes_batch)
-                total_added += int(result.get("added") or 0)
-                processed += len(routes_batch)
-
+            await _poll_agent_rib_advertise_job(
+                task_id,
+                src_vrf,
+                src_nip,
+                src_role,
+                vrf_norm,
+                target_neighbor,
+                target_to_rr,
+                enable=True,
+            )
+            added = 0
             async with _ADVERTISE_LOCK:
                 if task_id in _ADVERTISE_TASKS:
-                    _ADVERTISE_TASKS[task_id]["status"] = "completed"
-                    _ADVERTISE_TASKS[task_id]["progress"] = 100
-                    _ADVERTISE_TASKS[task_id]["added"] = total_added
-                    _ADVERTISE_TASKS[task_id]["message"] = (
-                        f"完成: {total_added}/{total_routes_count} ({source_spec} → "
-                        f"{'RR' if target_to_rr else vrf_norm}/{target_neighbor})"
-                    )
+                    added = int(_ADVERTISE_TASKS[task_id].get("added") or 0)
             logger.info(
-                "Advertise task %s done added=%s total=%s target_rr=%s",
+                "Advertise task %s done added=%s total=%s src=%s/%s target=%s/%s rr=%s",
                 task_id,
-                total_added,
+                added,
                 total_routes_count,
+                src_vrf,
+                src_nip,
+                vrf_norm,
+                target_neighbor,
                 target_to_rr,
             )
         finally:
@@ -1554,7 +1951,53 @@ async def _async_apply_bgp_route_advertise(vrf: str, target_neighbor: str, sourc
             if task_id in _ADVERTISE_TASKS:
                 _ADVERTISE_TASKS[task_id]["status"] = "error"
                 _ADVERTISE_TASKS[task_id]["message"] = str(e)[:200]
-        logger.error(f"Advertise task {task_id} failed: {str(e)}")
+        logger.error("Advertise task %s failed: %s", task_id, e)
+
+
+async def _async_withdraw_bgp_peer_cache_advertise(
+    vrf: str, target_neighbor: str, role: str, task_id: str
+) -> None:
+    """关闭通告开关：按上游来源持久库前缀向目标对端撤销（Agent 流式任务）。"""
+    from . import bgp_peer_rib
+
+    try:
+        conn = _db()
+        try:
+            vrf_norm = storage.validate_vrf_name(vrf)
+            target_to_rr = _advertise_target_is_rr(conn, vrf_norm, target_neighbor, role)
+            src_vrf, src_nip, src_role = _advertise_rib_source(conn, vrf_norm, target_neighbor, role)
+            total_routes_count = await _run_blocking_call(
+                bgp_peer_rib.count_peer_rib_routes, src_vrf, src_nip, src_role
+            )
+            if total_routes_count == 0:
+                async with _ADVERTISE_LOCK:
+                    if task_id in _ADVERTISE_TASKS:
+                        _ADVERTISE_TASKS[task_id]["status"] = "completed"
+                        _ADVERTISE_TASKS[task_id]["message"] = "无缓存路由需撤销"
+                return
+
+            async with _ADVERTISE_LOCK:
+                if task_id in _ADVERTISE_TASKS:
+                    _ADVERTISE_TASKS[task_id]["total_routes"] = total_routes_count
+
+            await _poll_agent_rib_advertise_job(
+                task_id,
+                src_vrf,
+                src_nip,
+                src_role,
+                vrf_norm,
+                target_neighbor,
+                target_to_rr,
+                enable=False,
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        async with _ADVERTISE_LOCK:
+            if task_id in _ADVERTISE_TASKS:
+                _ADVERTISE_TASKS[task_id]["status"] = "error"
+                _ADVERTISE_TASKS[task_id]["message"] = str(e)[:200]
+        logger.error("Withdraw advertise task %s failed: %s", task_id, e)
 
 
 def _apply_bgp_route_advertise(vrf: str, target_neighbor: str, source_neighbor_ip: str) -> dict:
@@ -1600,23 +2043,63 @@ def _apply_bgp_route_advertise(vrf: str, target_neighbor: str, source_neighbor_i
 
 
 @app.get("/api/bgp/learned-routes/filter-options")
-def api_bgp_learned_routes_filter_options():
-    """下拉用：库中 VRF、邻居 IP、upstream/downstream 汇总与 peer 快照。"""
+async def api_bgp_learned_routes_filter_options():
+    """下拉用：Agent 邻居列表 + 持久库 upstream/downstream 汇总。"""
+    from . import bgp_peer_rib
+
     conn = _db()
     try:
+        vrfs: list[str] = []
+        ips: list[str] = []
+        peer_pairs: list[dict[str, str]] = []
+        summary = {"upstream": 0, "downstream": 0, "total": 0}
+        seen_vrf: set[str] = set()
+        seen_ip: set[str] = set()
+        seen_pair: set[tuple[str, str]] = set()
+
+        async def _add_peer(v: str, ip: str, role: str) -> None:
+            nonlocal summary
+            pair = (v, ip)
+            if pair in seen_pair:
+                return
+            seen_pair.add(pair)
+            peer_pairs.append({"vrf": v, "neighbor_ip": ip, "role": role})
+            if v not in seen_vrf:
+                seen_vrf.add(v)
+                vrfs.append(v)
+            if ip not in seen_ip:
+                seen_ip.add(ip)
+                ips.append(ip)
+            rw = storage.route_window_for_bgp_role(role)
+            try:
+                cnt = await _run_blocking_call(bgp_peer_rib.count_peer_rib_routes, v, ip, role)
+            except Exception:
+                cnt = 0
+            if rw == "upstream":
+                summary["upstream"] += cnt
+            else:
+                summary["downstream"] += cnt
+            summary["total"] += cnt
+
+        for v, ip, role in _collect_learned_route_peers(conn, None, None, None):
+            await _add_peer(v, ip, role)
+        vrfs.sort()
+        ips.sort()
         return {
-            "vrfs": storage.list_bgp_distinct_learned_vrfs(conn),
-            "neighbor_ips": storage.list_bgp_distinct_learned_neighbor_ips(conn),
+            "vrfs": vrfs,
+            "neighbor_ips": ips,
+            "peer_pairs": peer_pairs,
             "route_windows": ["upstream", "downstream"],
-            "summary": storage.summarize_learned_routes_by_window(conn),
+            "summary": summary,
             "peer_snapshots": storage.list_bgp_peer_snapshots_brief(conn),
+            "data_source": "rib_agent",
         }
     finally:
         conn.close()
 
 
 @app.get("/api/bgp/learned-routes", response_model=BgpLearnedRoutesSnapshotOut)
-def api_bgp_learned_routes_list(
+async def api_bgp_learned_routes_list(
     vrf: Optional[str] = Query(None, description="按 VRF 筛选；省略表示全部"),
     neighbor_ip: Optional[str] = Query(None, description="按来源邻居 IP 精确筛选；省略表示全部"),
     route_window: Optional[str] = Query(
@@ -1626,12 +2109,12 @@ def api_bgp_learned_routes_list(
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(100, ge=1, le=1000, description="每页条数，范围 1-1000"),
 ):
-    """从 SQLite 读取双向定时同步的学习路由快照（非实时查 bgp-agent）。"""
+    """从 bgp-agent 持久库（Redis/RocksDB）分页读取学习路由。"""
+    from . import bgp_peer_rib
+
     conn = _db()
     try:
-        st = storage.get_bgp_rib_sync_state(conn)
-        sync_ok = bool(st[1])
-        q = (vrf or "").strip() or None
+        q_vrf = (vrf or "").strip() or None
         nip_raw = (neighbor_ip or "").strip()
         nip: Optional[str] = None
         if nip_raw:
@@ -1642,60 +2125,75 @@ def api_bgp_learned_routes_list(
         rw_raw = (route_window or "").strip().lower() or None
         if rw_raw and rw_raw not in {"upstream", "downstream"}:
             raise HTTPException(status_code=400, detail="invalid route_window")
-        summary = storage.summarize_learned_routes_by_window(conn)
-        peer_snaps = storage.list_bgp_peer_snapshots_brief(conn)
+
         frozen_map = storage.get_bgp_peer_frozen_map(conn)
-        total = storage.count_bgp_learned_routes(conn, q, nip, rw_raw)
-        rows = storage.list_bgp_learned_routes(conn, q, nip, page, page_size, rw_raw)
-        rib_src = "rib_sqlite" if sync_ok else "rib_sqlite_sync_failed"
-        routes = [
-            BgpLearnedRouteOut(
-                vrf=str(r["vrf"]),
-                prefix=str(r["prefix"]),
-                nexthop=str(r["nexthop"] or ""),
-                neighbor_ip=str(r["neighbor_ip"] or ""),
-                remote_as=int(r["remote_as"] or 0),
-                role=str(r["role"] or "unknown"),
-                as_path=str(r["as_path"] or ""),
-                updated_at=str(r["updated_at"] or ""),
-                route_window=str(r["route_window"] if "route_window" in r.keys() else "upstream"),
-                peer_frozen=frozen_map.get((str(r["vrf"]), str(r["neighbor_ip"] or "")), False),
-                persisted=True,
-                stale=False,
-                data_source=rib_src,
-            )
-            for r in rows
-        ]
-        if merge_upstream_stale and (not rw_raw or rw_raw == "upstream"):
-            learn_vrf = bgp_sticky_reconcile.upstream_cache_learn_vrf()
-            if not q or q == learn_vrf:
-                live_u = {str(r["prefix"]) for r in storage.list_bgp_learned_routes(conn, learn_vrf)}
-                for d in bgp_sticky_reconcile.merge_stale_upstream_into_routes(conn, learn_vrf, live_u):
-                    if nip and str(d.get("neighbor_ip") or "").strip() != nip:
-                        continue
-                    routes.append(
-                        BgpLearnedRouteOut(
-                            vrf=str(d["vrf"]),
-                            prefix=str(d["prefix"]),
-                            nexthop=str(d["nexthop"] or ""),
-                            neighbor_ip=str(d["neighbor_ip"] or ""),
-                            remote_as=int(d["remote_as"] or 0),
-                            role=str(d["role"] or "upstream"),
-                            as_path=str(d["as_path"] or ""),
-                            updated_at=str(d["updated_at"] or ""),
-                            route_window="upstream",
-                            peer_frozen=frozen_map.get(
-                                (str(d["vrf"]), str(d.get("neighbor_ip") or "")), False
-                            ),
-                            persisted=True,
-                            stale=bool(d.get("stale")),
-                            data_source="upstream_cache_sqlite",
-                        )
+        peer_snaps = storage.list_bgp_peer_snapshots_brief(conn)
+        summary = {"upstream": 0, "downstream": 0, "total": 0}
+        peers = _collect_learned_route_peers(conn, q_vrf, nip, rw_raw)
+
+        for v, ip, role in peers:
+            rw_use = storage.route_window_for_bgp_role(role)
+            try:
+                cnt = await _run_blocking_call(bgp_peer_rib.count_peer_rib_routes, v, ip, role)
+            except Exception:
+                cnt = 0
+            if rw_use == "upstream":
+                summary["upstream"] += cnt
+            else:
+                summary["downstream"] += cnt
+            summary["total"] += cnt
+
+        routes: list[BgpLearnedRouteOut] = []
+        total = 0
+        if peers:
+            if len(peers) == 1:
+                v, ip, role = peers[0]
+                rw_use = rw_raw or storage.route_window_for_bgp_role(role)
+                data = await _run_blocking_call(
+                    bgp_peer_rib.list_peer_rib_routes_page,
+                    v,
+                    ip,
+                    role,
+                    page,
+                    page_size,
+                )
+                total = int(data.get("total") or 0)
+                raw_routes = data.get("routes") or []
+            else:
+                data = await _run_blocking_call(
+                    bgp_peer_rib.list_merged_rib_routes_page, peers, page, page_size
+                )
+                total = int(data.get("total") or 0)
+                raw_routes = data.get("routes") or []
+
+            for item in raw_routes:
+                v = str(item.get("vrf") or "")
+                ip = str(item.get("neighbor_ip") or "")
+                role, _ = _resolve_bgp_role(conn, v, ip) if v and ip else ("unknown", "unset")
+                rw_use = str(item.get("window") or "") or storage.route_window_for_bgp_role(role)
+                routes.append(
+                    BgpLearnedRouteOut(
+                        vrf=v,
+                        prefix=str(item.get("prefix") or ""),
+                        nexthop=str(item.get("nexthop") or ""),
+                        neighbor_ip=ip,
+                        remote_as=int(item.get("remote_as") or 0),
+                        role=role,
+                        as_path=str(item.get("as_path") or ""),
+                        updated_at=str(item.get("updated_at") or ""),
+                        route_window=rw_use,
+                        peer_frozen=frozen_map.get((v, ip), False),
+                        persisted=True,
+                        stale=False,
+                        data_source="rib_agent",
                     )
+                )
+
+        st = storage.get_bgp_rib_sync_state(conn)
         return BgpLearnedRoutesSnapshotOut(
             last_sync_at=st[0],
-            last_sync_ok=bool(st[1]),
-            last_sync_error=str(st[2] or ""),
+            last_sync_ok=True,
+            last_sync_error="",
             routes=routes,
             total=total,
             page=page,
@@ -1708,11 +2206,36 @@ def api_bgp_learned_routes_list(
         conn.close()
 
 
+@app.post("/api/bgp/learned-routes/ingest")
+async def api_bgp_learned_routes_ingest(
+    vrf: str = Query(..., description="VRF"),
+    neighbor_ip: str = Query(..., description="邻居 IP"),
+):
+    """从对端 ADJ-RIB-In 全量灌入 Agent 持久库（需已开「路由入库」）。"""
+    from . import bgp_peer_rib
+
+    conn = _db()
+    try:
+        vrf_norm = storage.validate_vrf_name(vrf)
+        ip = storage.validate_ipv4(neighbor_ip)
+        role, _ = _resolve_bgp_role(conn, vrf_norm, ip)
+        if not storage.get_bgp_neighbor_store_received_routes(conn, vrf_norm, ip):
+            raise HTTPException(status_code=400, detail="store_received_routes is off for this peer")
+        result = await _run_blocking_call(bgp_peer_rib.ingest_peer_routes, vrf_norm, ip, role)
+        return {"ok": True, **(result or {})}
+    finally:
+        conn.close()
+
+
 @app.post("/api/bgp/learned-routes/sync")
-async def api_bgp_learned_routes_sync_now():
-    """立即从 bgp-agent 拉取 RIB 并刷新本地表；若启用 sticky，返回下游通告协调摘要。"""
-    sticky = await _run_blocking_call(bgp_learned_routes_sync.sync_bgp_learned_routes, DB_PATH)
-    return {"ok": True, "sticky": sticky or {}}
+async def api_bgp_learned_routes_sync_now(
+    vrf: Optional[str] = Query(None),
+    neighbor_ip: Optional[str] = Query(None),
+):
+    """兼容旧按钮：若带 vrf+neighbor_ip 则执行 ingest；否则仅刷新汇总（不再写 SQLite RIB）。"""
+    if (vrf or "").strip() and (neighbor_ip or "").strip():
+        return await api_bgp_learned_routes_ingest(vrf=vrf.strip(), neighbor_ip=neighbor_ip.strip())  # type: ignore[arg-type]
+    return {"ok": True, "message": "RIB 已改为 Agent 持久库；请选 VRF+邻居后点「立即同步」执行 ingest，或在上游开入库后由 Watch 写入"}
 
 
 # ----- VPN egress endpoints -----

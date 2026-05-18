@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"bgp_agent/pkg/tx"
 )
 
 type txRouteItem struct {
@@ -32,33 +34,16 @@ func (s *APIServer) handleTxRoutes(w http.ResponseWriter, r *http.Request) {
 		vrf = "default"
 	}
 	ctx := r.Context()
-	added, failed := 0, 0
-	var errs []string
 	defaultNH := s.rxAgent.ConfigRouterID()
+	ops := make([]tx.RouteOp, 0, len(req.Routes))
 	for _, item := range req.Routes {
 		pfx := strings.TrimSpace(item.Prefix)
 		if pfx == "" {
 			continue
 		}
-		nh := strings.TrimSpace(item.Nexthop)
-		if nh == "" {
-			nh = defaultNH
-		}
-		var err error
-		if req.Enable {
-			err = s.txPool.AdvertiseRoute(ctx, vrf, pfx, nh)
-		} else {
-			err = s.txPool.WithdrawRoute(ctx, vrf, pfx)
-		}
-		if err != nil {
-			failed++
-			if len(errs) < 20 {
-				errs = append(errs, pfx+": "+err.Error())
-			}
-			continue
-		}
-		added++
+		ops = append(ops, tx.RouteOp{Prefix: pfx, Nexthop: strings.TrimSpace(item.Nexthop)})
 	}
+	added, failed, errs := s.txPool.ApplyRoutesBatch(ctx, vrf, ops, req.Enable, defaultNH)
 	s.writeJSON(w, map[string]interface{}{
 		"ok":      failed == 0,
 		"added":   added,

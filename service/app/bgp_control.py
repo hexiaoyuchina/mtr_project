@@ -32,6 +32,25 @@ def default_local_as() -> int:
     return int(os.environ.get("LOCAL_AS", "63199"))
 
 
+def _op_db_path() -> Path:
+    return Path(os.environ.get("MTR_OP_DB", "/root/mtr_op/data.db")).expanduser()
+
+
+def _satellite_style_vrf_name(vrf: str) -> bool:
+    p = (os.environ.get("MTR_SATELLITE_VRF_PREFIX") or "vbgp").strip() or "vbgp"
+    v = (vrf or "").strip()
+    return v.startswith(p) and v[len(p) :].isdigit()
+
+
+def _downstream_bind_interface(vrf: str) -> str:
+    """卫星 VRF 下游邻居须绑 ipvlan 口，否则无法以冒充源 IP 主动建连。"""
+    from . import bgp_ipvlan_reconcile
+
+    if not bgp_ipvlan_reconcile.enabled() or not _satellite_style_vrf_name(vrf):
+        return ""
+    return (bgp_ipvlan_reconcile.ipvlan_iface_for_vrf(_op_db_path(), vrf) or "").strip()
+
+
 def default_router_id() -> str:
     """与 RR 建连的本端地址（BGP Router ID / update-source），非 OP SSH 管理 IP。"""
     return os.environ.get("ROUTER_ID", "139.159.43.207").strip()
@@ -71,6 +90,24 @@ def list_agent_neighbors() -> List[Dict[str, Any]]:
         return list((r.json() or {}).get("neighbors") or [])
 
 
+def list_rr_rx_neighbor_rows() -> List[Dict[str, Any]]:
+    """RX 侧全部上游 RR（session=rx）。"""
+    out: List[Dict[str, Any]] = []
+    try:
+        for row in list_agent_neighbors():
+            if str(row.get("session") or "").lower() == "rx":
+                out.append(row)
+    except Exception:
+        pass
+    return out
+
+
+def get_rr_rx_neighbor_row() -> Optional[Dict[str, Any]]:
+    """兼容：返回第一个 RX RR 行。"""
+    rows = list_rr_rx_neighbor_rows()
+    return rows[0] if rows else None
+
+
 def add_neighbor(
     vrf: str,
     address: str,
@@ -81,6 +118,9 @@ def add_neighbor(
     bind_interface: str = "",
     passive_mode: bool = False,
 ) -> Dict[str, Any]:
+    vrf_n = storage.validate_vrf_name(vrf)
+    if vrf_n == GOBGP_VRF_RR:
+        raise ValueError("gobgp-rr VRF is reserved for RX RR; use role=rr to add Route Reflector")
     require_agent()
     body: Dict[str, Any] = {
         "address": address,
@@ -172,13 +212,31 @@ def configure_rr(address: str, remote_as: int, local_address: str = "") -> Dict[
     }
 
 
-def remove_rr() -> None:
+def remove_rr(address: str = "") -> None:
+    """删除指定 RR；address 为空时删除 Agent 上全部 RR。"""
     require_agent()
+    body: Dict[str, Any] = {}
+    addr = (address or "").strip()
+    if addr:
+        body["address"] = addr
     with _client() as c:
-        r = c.post("/api/rr/remove", json={})
+        r = c.post("/api/rr/remove", json=body)
         if r.status_code >= 400:
             raise RuntimeError(r.text or f"HTTP {r.status_code}")
-    _persist_bgp_agent_env(rr_addr="", rr_as=0)
+    if not addr:
+        _persist_bgp_agent_env(rr_addr="", rr_as=0)
+
+
+def set_rr_enabled(address: str, enabled: bool) -> None:
+    """RR 邻居启停（仅 RX，不走 TX pool）。"""
+    require_agent()
+    with _client() as c:
+        r = c.post(
+            "/api/rr/toggle",
+            json={"address": address, "enabled": bool(enabled)},
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(r.text or f"HTTP {r.status_code}")
 
 
 # 兼容旧调用名
@@ -298,10 +356,8 @@ def find_rr_meta(conn) -> Optional[Tuple[str, str, str]]:
 
 
 def clear_rr_meta_except(conn, keep_vrf: str, keep_ip: str) -> None:
-    """全局仅保留一条 RR meta（单会话收路由）。"""
-    for vrf, nip, role, _note, _src in _iter_meta(conn):
-        if is_rr_role(role) and not (vrf == keep_vrf and nip == keep_ip):
-            storage.delete_bgp_neighbor_meta(conn, vrf, nip)
+    """兼容旧调用：多 RR 模式下不再删除其它 RR meta。"""
+    _ = conn, keep_vrf, keep_ip
 
 
 def reconcile_meta_to_agent(conn) -> Dict[str, Any]:
@@ -310,14 +366,10 @@ def reconcile_meta_to_agent(conn) -> Dict[str, Any]:
     if not health_ok():
         summary["skipped"] = "agent_down"
         return summary
-    rr_done = False
-    rr_meta = find_rr_meta(conn)
     for vrf, nip, role, _note, src in _iter_meta(conn):
         r = (role or "").strip().lower()
         try:
             if is_rr_role(r):
-                if rr_done:
-                    continue
                 ras = int(_agent_env().get("rr_as") or 0) or default_local_as()
                 try:
                     row = next(
@@ -330,11 +382,23 @@ def reconcile_meta_to_agent(conn) -> Dict[str, Any]:
                     pass
                 configure_rr(nip, ras, local_address=(src or "").strip() or default_router_id())
                 summary["added"].append(f"rr:{nip}")
-                rr_done = True
             elif is_downstream_role(r):
                 env = _agent_env()
                 dras = int(os.environ.get("MTR_DOWNSTREAM_REMOTE_AS", env["local_as"]))
-                add_neighbor(vrf, nip, dras, "downstream", local_address=src or "")
+                bind_if = _downstream_bind_interface(vrf)
+                if bind_if:
+                    try:
+                        remove_neighbor(vrf, nip)
+                    except Exception as e:
+                        logger.debug("reconcile remove before re-add %s/%s: %s", vrf, nip, e)
+                add_neighbor(
+                    vrf,
+                    nip,
+                    dras,
+                    "downstream",
+                    local_address=src or "",
+                    bind_interface=bind_if,
+                )
                 summary["added"].append(f"{vrf}:{nip}")
         except Exception as e:
             summary["errors"].append(f"{vrf}:{nip}:{e}")
@@ -539,3 +603,151 @@ def add_bgp_networks_batch(
                 if len(errs) < 20:
                     errs.append(str(e))
     return {"added": added, "failed": failed, "errors": errs, "method": "gobgp_tx"}
+
+
+def withdraw_bgp_networks_batch_to_rr(
+    prefixes_with_nexthop: list, timeout_s: int = 60
+) -> Dict[str, Any]:
+    """撤销向 RR 通告的前缀（与本窗缓存一致）。"""
+    if not prefixes_with_nexthop:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_rx"}
+    nh_default = default_router_id()
+    routes = [
+        {"prefix": str(p), "nexthop": (str(nh).strip() if nh else nh_default)}
+        for p, nh in prefixes_with_nexthop
+        if str(p).strip()
+    ]
+    if not routes:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_rx"}
+    require_agent()
+    withdrawn, failed = 0, 0
+    errs: List[str] = []
+    chunk = 500
+    with _client() as c:
+        for i in range(0, len(routes), chunk):
+            part = routes[i : i + chunk]
+            r = c.post(
+                "/api/rr/routes",
+                json={"enable": False, "routes": part},
+                timeout=float(timeout_s),
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(r.text or f"HTTP {r.status_code}")
+            data = r.json() or {}
+            withdrawn += int(data.get("added") or 0)
+            failed += int(data.get("failed") or 0)
+            for e in data.get("errors") or []:
+                if len(errs) < 20:
+                    errs.append(str(e))
+    return {"withdrawn": withdrawn, "failed": failed, "errors": errs, "method": "gobgp_rx"}
+
+
+def withdraw_bgp_networks_batch(
+    vrf: str, prefixes_with_nexthop: list, timeout_s: int = 60
+) -> Dict[str, Any]:
+    """撤销向下游 VRF 通告的前缀。"""
+    if not prefixes_with_nexthop:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_tx"}
+    nh_default = default_router_id()
+    routes = [
+        {"prefix": str(p), "nexthop": (str(nh).strip() if nh else nh_default)}
+        for p, nh in prefixes_with_nexthop
+        if str(p).strip()
+    ]
+    if not routes:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_tx"}
+    require_agent()
+    withdrawn, failed = 0, 0
+    errs: List[str] = []
+    chunk = 500
+    with _client() as c:
+        for i in range(0, len(routes), chunk):
+            part = routes[i : i + chunk]
+            r = c.post(
+                "/api/tx/routes",
+                json={"vrf": vrf, "enable": False, "routes": part},
+                timeout=float(timeout_s),
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(r.text or f"HTTP {r.status_code}")
+            data = r.json() or {}
+            withdrawn += int(data.get("added") or 0)
+            failed += int(data.get("failed") or 0)
+            for e in data.get("errors") or []:
+                if len(errs) < 20:
+                    errs.append(str(e))
+    return {"withdrawn": withdrawn, "failed": failed, "errors": errs, "method": "gobgp_tx"}
+
+
+def withdraw_bgp_networks_batch_to_rr(
+    prefixes_with_nexthop: list, timeout_s: int = 60
+) -> Dict[str, Any]:
+    """撤销向 RR 通告的前缀（与本窗缓存一致）。"""
+    if not prefixes_with_nexthop:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_rx"}
+    nh_default = default_router_id()
+    routes = [
+        {"prefix": str(p), "nexthop": (str(nh).strip() if nh else nh_default)}
+        for p, nh in prefixes_with_nexthop
+        if str(p).strip()
+    ]
+    if not routes:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_rx"}
+    require_agent()
+    withdrawn, failed = 0, 0
+    errs: List[str] = []
+    chunk = 500
+    with _client() as c:
+        for i in range(0, len(routes), chunk):
+            part = routes[i : i + chunk]
+            r = c.post(
+                "/api/rr/routes",
+                json={"enable": False, "routes": part},
+                timeout=float(timeout_s),
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(r.text or f"HTTP {r.status_code}")
+            data = r.json() or {}
+            withdrawn += int(data.get("added") or 0)
+            failed += int(data.get("failed") or 0)
+            for e in data.get("errors") or []:
+                if len(errs) < 20:
+                    errs.append(str(e))
+    return {"withdrawn": withdrawn, "failed": failed, "errors": errs, "method": "gobgp_rx"}
+
+
+def withdraw_bgp_networks_batch(
+    vrf: str, prefixes_with_nexthop: list, timeout_s: int = 60
+) -> Dict[str, Any]:
+    """撤销向下游 VRF 通告的前缀。"""
+    if not prefixes_with_nexthop:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_tx"}
+    nh_default = default_router_id()
+    routes = [
+        {"prefix": str(p), "nexthop": (str(nh).strip() if nh else nh_default)}
+        for p, nh in prefixes_with_nexthop
+        if str(p).strip()
+    ]
+    if not routes:
+        return {"withdrawn": 0, "failed": 0, "errors": [], "method": "gobgp_tx"}
+    require_agent()
+    withdrawn, failed = 0, 0
+    errs: List[str] = []
+    chunk = 500
+    with _client() as c:
+        for i in range(0, len(routes), chunk):
+            part = routes[i : i + chunk]
+            r = c.post(
+                "/api/tx/routes",
+                json={"vrf": vrf, "enable": False, "routes": part},
+                timeout=float(timeout_s),
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(r.text or f"HTTP {r.status_code}")
+            data = r.json() or {}
+            withdrawn += int(data.get("added") or 0)
+            failed += int(data.get("failed") or 0)
+            for e in data.get("errors") or []:
+                if len(errs) < 20:
+                    errs.append(str(e))
+    return {"withdrawn": withdrawn, "failed": failed, "errors": errs, "method": "gobgp_tx"}

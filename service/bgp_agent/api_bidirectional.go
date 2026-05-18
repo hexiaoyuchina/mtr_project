@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
+	"bgp_agent/pkg/rx"
 )
 
 type rrRoutesReq struct {
@@ -56,33 +58,16 @@ func (s *APIServer) handleRRRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	added, failed := 0, 0
-	var errs []string
 	defaultNH := s.rxAgent.ConfigRouterID()
+	ops := make([]rx.RouteOp, 0, len(req.Routes))
 	for _, item := range req.Routes {
 		pfx := strings.TrimSpace(item.Prefix)
 		if pfx == "" {
 			continue
 		}
-		nh := strings.TrimSpace(item.Nexthop)
-		if nh == "" {
-			nh = defaultNH
-		}
-		var err error
-		if req.Enable {
-			err = s.rxAgent.AdvertiseIPv4(ctx, pfx, nh)
-		} else {
-			err = s.rxAgent.WithdrawIPv4(ctx, pfx)
-		}
-		if err != nil {
-			failed++
-			if len(errs) < 20 {
-				errs = append(errs, pfx+": "+err.Error())
-			}
-			continue
-		}
-		added++
+		ops = append(ops, rx.RouteOp{Prefix: pfx, Nexthop: strings.TrimSpace(item.Nexthop)})
 	}
+	added, failed, errs := s.rxAgent.ApplyIPv4Batch(ctx, ops, req.Enable, defaultNH)
 	s.writeJSON(w, map[string]interface{}{
 		"ok":     failed == 0,
 		"added":  added,
@@ -107,13 +92,19 @@ func (s *APIServer) RunPeerWatch(ctx context.Context, interval time.Duration) {
 }
 
 func (s *APIServer) syncPeerFreezeState(ctx context.Context) {
-	_, _, state, _, _, _ := s.rxAgent.ListRRPeer(ctx)
-	rrUp := strings.Contains(strings.ToUpper(state), "ESTABLISHED")
-	s.processor.SetRRConnected(rrUp)
-	if rrUp {
+	rrPeers, _ := s.rxAgent.ListRRPeers(ctx)
+	anyRRUp := false
+	for _, p := range rrPeers {
+		up := strings.Contains(strings.ToUpper(p.State), "ESTABLISHED")
+		s.processor.SetUpstreamPeerConnected(p.Address, up)
+		if up {
+			anyRRUp = true
+		}
+	}
+	s.processor.SetRRConnected(anyRRUp)
+	if anyRRUp {
 		s.txPool.UnfreezeAll()
-	} else if s.rxAgent != nil {
-		// RR 断链：冻住 Processor 收路由 + 全部 TX 保持已通告
+	} else if s.rxAgent != nil && len(rrPeers) > 0 {
 		s.txPool.FreezeAll()
 	}
 	peers, err := s.txPool.ListAllPeers(ctx)
@@ -136,8 +127,24 @@ func (s *APIServer) handlePeersFreezeStatus(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ctx := r.Context()
-	rrAddr, _, rrState, _, _, _ := s.rxAgent.ListRRPeer(ctx)
-	rrUp := strings.Contains(strings.ToUpper(rrState), "ESTABLISHED")
+	rrPeers, _ := s.rxAgent.ListRRPeers(ctx)
+	var upstream []map[string]interface{}
+	anyRRUp := false
+	for _, p := range rrPeers {
+		up := strings.Contains(strings.ToUpper(p.State), "ESTABLISHED")
+		if up {
+			anyRRUp = true
+		}
+		upstream = append(upstream, map[string]interface{}{
+			"vrf":         "gobgp-rr",
+			"neighbor_ip": p.Address,
+			"window":      "upstream",
+			"established": up,
+			"frozen":      !up,
+			"pfx_rcd":     p.PfxRcd,
+			"state":       p.State,
+		})
+	}
 	peers, _ := s.txPool.ListAllPeers(ctx)
 	var ds []map[string]interface{}
 	for _, p := range peers {
@@ -153,15 +160,9 @@ func (s *APIServer) handlePeersFreezeStatus(w http.ResponseWriter, r *http.Reque
 		})
 	}
 	s.writeJSON(w, map[string]interface{}{
-		"upstream": map[string]interface{}{
-			"vrf":         "gobgp-rr",
-			"neighbor_ip": rrAddr,
-			"window":      "upstream",
-			"established": rrUp,
-			"frozen":      !rrUp,
-			"state":       rrState,
-		},
-		"downstream": ds,
-		"time":       time.Now().Format(time.RFC3339),
+		"upstream":       upstream,
+		"upstream_any_up": anyRRUp,
+		"downstream":     ds,
+		"time":           time.Now().Format(time.RFC3339),
 	})
 }

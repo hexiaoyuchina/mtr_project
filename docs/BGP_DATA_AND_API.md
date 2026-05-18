@@ -1,10 +1,12 @@
 # BGP 数据模型与 HTTP 接口
 
-与架构说明配套：[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)。默认库文件由 `MTR_DB` 指定（常见 `/var/lib/mtr-op/mtr.db`），schema 在 `service/app/storage.py` 的 `init_schema` 中初始化。
+与架构说明配套：[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)（**§2**：百万 RIB = Agent **Redis/RocksDB** 按 peer；**本节 SQLite** = 邻居 meta / freeze，**学习路由列表改读 Agent 持久库**）。
+
+默认 OP 库文件由 `MTR_DB` 指定（常见 `/root/mtr_op/data.db`），schema 在 `service/app/storage.py` 的 `init_schema` 中初始化。Agent 侧 RIB 见 `GET /api/routes`、`GET /api/storage/stats`（`:9179`）。
 
 ---
 
-## 1. SQLite 表一览
+## 1. SQLite 表一览（OP 控制面，非百万 RIB 主库）
 
 | 表名 | 用途 |
 |------|------|
@@ -29,10 +31,11 @@
 | `note` | TEXT | 备注 |
 | `source_ip` | TEXT | 本端 TCP 源（update-source）；RR 为 207，下游常为冒充 IP |
 | `advertise_routes` | INTEGER | `1` 启用行内交叉通告 |
-| `advertise_routes_from` | TEXT | 通告来源：邻居 IP、`@upstream`、`@downstream`；空时列表 API 按角色填默认 |
+| `advertise_routes_from` | TEXT | 遗留字段；新 UI 通告仅读 Agent 按 peer RIB |
+| `store_received_routes` | INTEGER | `1` 将从对端收到的路由写入 Agent Redis/RocksDB |
 | `created_at` | TEXT | 创建时间 UTC |
 
-**用途**：BGP 管理页展示；新增/编辑邻居；驱动 `_default_advertise_routes_from` 与异步 `_async_apply_bgp_route_advertise`。
+**用途**：BGP 管理页展示；**路由入库** / **通告缓存** 开关；`routes_cached` 由 OP 调 Agent `GET /api/rib/routes/count` 填充。
 
 ---
 
@@ -139,27 +142,31 @@
 | PATCH | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | 改 IP/AS/角色/源地址（RR 会先删后建） |
 | DELETE | `/api/bgp/neighbors/{vrf}/{neighbor_ip}` | 删除；RR 调 Agent remove；清该 IP 学习路由 |
 | POST | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/toggle` | 启停邻居 |
-| POST | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/advertise` | 设置交叉通告开关与来源，异步批量推送 |
+| POST | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/store-routes` | **路由入库**：对端通告给本机的路由写入 Agent；开启时自动 `ingest-peer`（RR/下游统一） |
+| POST | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/advertise` | **路由通告**开关：触发 Agent 流式任务（body: `advertise_routes`）；**不**走分页 `GET /api/rib/routes` |
 | GET | `/api/bgp/neighbors/{vrf}/{neighbor_ip}/advertise/status` | 异步通告任务进度 |
 | GET | `/api/bgp/vrfs` | VRF 列表（内核 + Agent + `gobgp-rr`） |
 | GET | `/api/bgp/satellite-vrfs` | ARP 表中的卫星 VRF |
 | GET | `/api/bgp/neighbor-form-hints` | 表单提示（含 `@upstream`、`@downstream`） |
 | POST | `/api/bgp/instances` | 仅建内核/元数据（少用） |
-| POST | `/api/bgp/sync-from-frr` | 遗留：从 FRR 同步 meta（非学习路由主路径） |
+| POST | `/api/bgp/sync-from-frr` | 兼容 URL：从 **bgp-agent** 合并邻居到 SQLite meta（非学习路由主路径；**不是** vtysh/FRR） |
 
-**`BgpNeighborOut` 扩展字段**：`peer_frozen`、`routes_cached`（库内该 peer 前缀数）。
+**`BgpNeighborOut` 扩展字段**：`store_received_routes`、`routes_cached`（Agent 持久库条数）、`routes_received`（会话 `pfx_rcd`）。
 
 ---
 
-### 4.2 学习路由（只读 SQLite）
+### 4.2 学习路由（Agent 持久库，OP 分页代理）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/bgp/learned-routes` | 分页快照；Query：`vrf`、`neighbor_ip`、`route_window`、`page`、`page_size`、`merge_upstream_stale` |
-| GET | `/api/bgp/learned-routes/filter-options` | 下拉 VRF/IP；`summary`、`peer_snapshots` |
-| POST | `/api/bgp/learned-routes/sync` | 立即执行 `sync_bidirectional_routes` |
+| GET | `/api/bgp/learned-routes` | **须** `vrf` + `neighbor_ip` 才返回明细；否则仅 `summary` 汇总各 peer 条数 |
+| GET | `/api/bgp/learned-routes/filter-options` | Agent 邻居 VRF/IP + RIB 汇总 |
+| POST | `/api/bgp/learned-routes/ingest` | 从对端 ADJ-RIB-In 全量灌库（Query: `vrf`, `neighbor_ip`；RR/下游统一） |
+| POST | `/api/bgp/learned-routes/sync` | 兼容：带 `vrf`+`neighbor_ip` 时等同 ingest |
 
-**单条路由 `BgpLearnedRouteOut`**：`route_window`、`peer_frozen`、`data_source`（`rib_sqlite` / `rib_sqlite_sync_failed` / `upstream_cache_sqlite`）、`stale`。
+**单条路由 `BgpLearnedRouteOut`**：`data_source=rib_agent`；`route_window`、`peer_frozen` 仍来自 SQLite meta。
+
+**`bgp_learned_routes` 表**：保留用于历史/后台任务，**不再是 Web 学习路由主数据源**。
 
 ---
 
@@ -199,6 +206,14 @@
 | POST | `/api/neighbors/remove` | 删除邻居 |
 | POST | `/api/neighbors/toggle` | 启停 |
 | GET | `/api/storage/stats` | Redis/RocksDB 统计 |
+| GET | `/api/rib/routes` | 按 peer 分页（**仅 Web/查询**）：`page`、`page_size` |
+| GET | `/api/rib/routes/count` | 按 peer 条数 O(1)（UI 与通告进度分母） |
+| POST | `/api/rib/advertise` | 流式通告任务：`IteratePeerRoutes` → TX/RR 批量 AddPath |
+| POST | `/api/rib/withdraw` | 流式撤销任务（同上，`enable=false`） |
+| GET | `/api/rib/advertise/status` | 任务进度：`task_id` |
+| GET/POST | `/api/rib/policy` | 读/写 `store_routes` 等 per-peer 策略 |
+| POST | `/api/rib/ingest-peer` | 对端 Adj-RIB-In → 按 peer 持久库（Query: `window`, `vrf`, `neighbor_ip`） |
+| POST | `/api/rib/ingest-downstream` | 兼容别名（等同 `ingest-peer`，`window=downstream`） |
 
 ---
 
