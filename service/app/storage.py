@@ -1514,10 +1514,13 @@ def delete_bgp_learned_routes_by_neighbor_ip(conn: sqlite3.Connection, neighbor_
     validate_ipv4(neighbor_ip)
     batch_size = 1000
     total_deleted = 0
+    # SQLite 3.35+ 才支持 ``DELETE … LIMIT``；旧版用 rowid 子查询分批删。
     while True:
         cursor = conn.execute(
-            "DELETE FROM bgp_learned_routes WHERE neighbor_ip = ? LIMIT ?",
-            (neighbor_ip, batch_size)
+            "DELETE FROM bgp_learned_routes WHERE rowid IN ("
+            "SELECT rowid FROM bgp_learned_routes WHERE neighbor_ip = ? LIMIT ?"
+            ")",
+            (neighbor_ip, batch_size),
         )
         deleted = cursor.rowcount
         if deleted == 0:

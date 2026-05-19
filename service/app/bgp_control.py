@@ -64,8 +64,15 @@ def is_downstream_role(role: str) -> bool:
     return (role or "").strip().lower() == "downstream"
 
 
+def _client_timeout() -> float:
+    try:
+        return float(os.environ.get("MTR_BGP_AGENT_HTTP_TIMEOUT", "120"))
+    except ValueError:
+        return 120.0
+
+
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=agent_url(), timeout=30.0)
+    return httpx.Client(base_url=agent_url(), timeout=_client_timeout())
 
 
 def health_ok() -> bool:
@@ -82,11 +89,13 @@ def require_agent() -> None:
         raise RuntimeError("GoBGP Agent 不可用，请检查 bgp-agent.service")
 
 
-def list_agent_neighbors() -> List[Dict[str, Any]]:
-    require_agent()
-    with _client() as c:
+def list_agent_neighbors(*, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+    """读取 Agent 邻居表；``timeout`` 用于 OP 列表等场景，避免 Agent 慢时拖死整站 API。"""
+    t = float(timeout) if timeout is not None else _client_timeout()
+    with httpx.Client(base_url=agent_url(), timeout=t) as c:
         r = c.get("/api/neighbors")
-        r.raise_for_status()
+        if r.status_code >= 400:
+            r.raise_for_status()
         return list((r.json() or {}).get("neighbors") or [])
 
 
@@ -386,11 +395,10 @@ def reconcile_meta_to_agent(conn) -> Dict[str, Any]:
                 env = _agent_env()
                 dras = int(os.environ.get("MTR_DOWNSTREAM_REMOTE_AS", env["local_as"]))
                 bind_if = _downstream_bind_interface(vrf)
-                if bind_if:
-                    try:
-                        remove_neighbor(vrf, nip)
-                    except Exception as e:
-                        logger.debug("reconcile remove before re-add %s/%s: %s", vrf, nip, e)
+                try:
+                    remove_neighbor(vrf, nip)
+                except Exception as e:
+                    logger.debug("reconcile remove before re-add %s/%s: %s", vrf, nip, e)
                 add_neighbor(
                     vrf,
                     nip,

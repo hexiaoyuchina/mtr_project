@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"bgp_agent/pkg/gobgp_path"
-
-	api "github.com/osrg/gobgp/v3/api"
 )
 
 // LearnedRoute 从下游 ADJ-IN 学到的路由。
@@ -18,33 +16,25 @@ type LearnedRoute struct {
 
 // ListAdjInRoutes 列出指定邻居在 ADJ-IN 中的 IPv4 单播路由。
 func (a *TxAgent) ListAdjInRoutes(ctx context.Context, neighbor string) ([]LearnedRoute, error) {
-	if a.server == nil {
-		return nil, nil
-	}
 	var out []LearnedRoute
-	err := a.server.ListPath(ctx, &api.ListPathRequest{
-		TableType: api.TableType_ADJ_IN,
-		Family: &api.Family{
-			Afi:  api.Family_AFI_IP,
-			Safi: api.Family_SAFI_UNICAST,
-		},
-		Name: neighbor,
-	}, func(dest *api.Destination) {
-		if dest == nil {
-			return
-		}
-		for _, p := range dest.Paths {
-			pfx, nh, asp, ok := gobgp_path.ParseIPv4Unicast(p)
-			if !ok {
-				continue
-			}
-			out = append(out, LearnedRoute{
-				Prefix:   pfx,
-				Nexthop:  nh,
-				ASPath:   asp,
-				Neighbor: neighbor,
-			})
-		}
+	err := a.WalkAdjInRoutes(ctx, neighbor, func(lr LearnedRoute) error {
+		out = append(out, lr)
+		return nil
 	})
 	return out, err
+}
+
+// WalkAdjInRoutes 流式遍历 ADJ-IN。
+func (a *TxAgent) WalkAdjInRoutes(ctx context.Context, neighbor string, fn func(LearnedRoute) error) error {
+	if a.server == nil || neighbor == "" {
+		return nil
+	}
+	return gobgp_path.WalkAdjInIPv4(ctx, a.server, neighbor, func(r gobgp_path.AdjInRoute) error {
+		return fn(LearnedRoute{
+			Prefix:   r.Prefix,
+			Nexthop:  r.Nexthop,
+			ASPath:   r.ASPath,
+			Neighbor: neighbor,
+		})
+	})
 }

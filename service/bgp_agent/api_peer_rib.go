@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"bgp_agent/pkg/processor"
+	"bgp_agent/pkg/rx"
 	"bgp_agent/pkg/storage"
+	"bgp_agent/pkg/tx"
 )
 
 func (s *APIServer) handleRibRoutes(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +117,17 @@ func (s *APIServer) handleRibPolicy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if p.StoreRoutes {
+			win := strings.TrimSpace(p.Window)
+			if win == "" {
+				if p.VRF == processor.VRFGobgpRR {
+					win = processor.WindowUpstream
+				} else {
+					win = processor.WindowDownstream
+				}
+			}
+			s.maybeBackgroundIngestPeer(win, p.VRF, p.NeighborIP)
+		}
 		s.writeJSON(w, map[string]interface{}{"ok": true})
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -174,43 +187,27 @@ func (s *APIServer) ingestPeerRoutesFromAdjIn(ctx context.Context, window, vrf, 
 	if !s.storage.ShouldStoreRoutes(ctx, vrf, neighbor) {
 		return 0, 0, fmt.Errorf("store_routes disabled")
 	}
-	batch := make([]storage.PeerRoute, 0, 4096)
-	switch window {
+	win := window
+	if win != processor.WindowUpstream {
+		win = processor.WindowDownstream
+	}
+	builder := s.storage.NewPeerIngestBuilder(win, vrf, neighbor)
+	switch win {
 	case processor.WindowUpstream:
-		learned, err := s.rxAgent.ListAdjInRoutes(ctx, neighbor)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, lr := range learned {
-			batch = append(batch, storage.PeerRoute{
-				Window:     window,
-				VRF:        vrf,
-				NeighborIP: neighbor,
-				Prefix:     lr.Prefix,
-				Nexthop:    lr.Nexthop,
-				ASPath:     lr.ASPath,
-			})
-		}
+		err = s.rxAgent.WalkAdjInRoutes(ctx, neighbor, func(lr rx.LearnedRoute) error {
+			return builder.Add(ctx, lr.Prefix, lr.Nexthop, lr.ASPath, 0)
+		})
 	default:
-		agent, err := s.txPool.GetAgent(vrf)
-		if err != nil || agent == nil {
+		agent, gerr := s.txPool.GetAgent(vrf)
+		if gerr != nil || agent == nil {
 			return 0, 0, fmt.Errorf("tx agent not found for vrf %s", vrf)
 		}
-		learned, err := agent.ListAdjInRoutes(ctx, neighbor)
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, lr := range learned {
-			batch = append(batch, storage.PeerRoute{
-				Window:     processor.WindowDownstream,
-				VRF:        vrf,
-				NeighborIP: neighbor,
-				Prefix:     lr.Prefix,
-				Nexthop:    lr.Nexthop,
-				ASPath:     lr.ASPath,
-			})
-		}
-		window = processor.WindowDownstream
+		err = agent.WalkAdjInRoutes(ctx, neighbor, func(lr tx.LearnedRoute) error {
+			return builder.Add(ctx, lr.Prefix, lr.Nexthop, lr.ASPath, 0)
+		})
 	}
-	return s.storage.IngestPeerRoutes(ctx, window, vrf, neighbor, batch)
+	if err != nil {
+		return 0, 0, err
+	}
+	return builder.Finish(ctx)
 }

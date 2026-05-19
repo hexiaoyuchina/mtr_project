@@ -37,6 +37,8 @@ from deploy_light import (  # noqa: E402
 
 SERVICE = ROOT / "service"
 NFQ = ROOT / "scripts" / "mtr_spoof_nfqueue.py"
+TE_NFQ = ROOT / "scripts" / "te_rewrite_nfqueue.py"
+ARP_DAEMON = ROOT / "scripts" / "arp_spoof_daemon.py"
 OVERLAY = LAB_DIR / "overlay" / "bgp_agent"
 
 
@@ -85,8 +87,8 @@ def main() -> None:
     if not pw:
         print("请设置 MTR_OP_SSH_PASSWORD（或写入 200/lab.env）", file=sys.stderr)
         sys.exit(2)
-    if not SERVICE.is_dir() or not NFQ.is_file():
-        print("缺少 service/ 或 scripts/mtr_spoof_nfqueue.py", file=sys.stderr)
+    if not SERVICE.is_dir() or not NFQ.is_file() or not TE_NFQ.is_file() or not ARP_DAEMON.is_file():
+        print("缺少 service/ 或 scripts/*_nfqueue.py / arp_spoof_daemon.py", file=sys.stderr)
         sys.exit(1)
 
     remote = os.environ.get("MTR_OP_REMOTE_DIR", REMOTE).strip()
@@ -98,6 +100,13 @@ def main() -> None:
     try:
         upload_tree(sftp, SERVICE, remote)
         sftp.put(str(NFQ), f"{remote}/mtr_spoof_nfqueue.py")
+        sftp.put(str(TE_NFQ), f"{remote}/te_rewrite_nfqueue.py")
+        try:
+            sftp.stat(f"{remote}/scripts")
+        except OSError:
+            sftp.mkdir(f"{remote}/scripts")
+        sftp.put(str(ARP_DAEMON), f"{remote}/scripts/arp_spoof_daemon.py")
+        print(f"  scripts -> {remote}/scripts/arp_spoof_daemon.py")
         print("=== overlay（仅覆盖实验室补丁文件）===")
         apply_overlay(sftp, posixpath.join(remote, "bgp_agent"))
         for name in ("remote-restart.sh", "remote-network-prereq.sh"):
@@ -127,8 +136,21 @@ def main() -> None:
         "MTR_BGP_RIB_SYNC",
         "MTR_BGP_RIB_SYNC_SEC",
         "MTR_PROBE_SSH_HOST",
+        "MTR_TE_PROBE_RETURN_VIA_200",
+        "MTR_TE_PROBE_SRC",
+        "MTR_TE_RETURN_IP",
+        "MTR_TE_REWRITE_IIF",
+        "MTR_TE_REWRITE_PEER_HOSTS",
+        "MTR_TE_REWRITE_PEER_QUEUE",
+        "MTR_TE_REWRITE_PEER_SCRIPT",
+        "MTR_OP_SSH_PASSWORD",
         "MTR_BGP_ROLE_MAP",
         "MTR_BGP_DB_PRESETS",
+        "MTR_BGP_NEIGHBORS_FAST_LIST",
+        "MTR_BGP_NEIGHBORS_AGENT_TIMEOUT",
+        "MTR_BGP_STARTUP_RESTORE",
+        "MTR_BGP_AGENT_RESTORE_MAX_SEC",
+        "MTR_BGP_RESUME_ADVERTISE",
     ):
         val = os.environ.get(key, "")
         if val:
@@ -144,32 +166,12 @@ def main() -> None:
     bgp_cfg["remote_dir"] = remote
     restart += shell_sync_bgp_agent(bgp_cfg, rebuild=rebuild)
 
-    post = f"""
-python3 - <<'PY'
-import json, urllib.request, time
-AS=int("{os.environ.get("LOCAL_AS", "63199")}")
-agent="http://127.0.0.1:9179"
-base="http://127.0.0.1:8808"
-
-def req(m,u,b=None):
- d=json.dumps(b).encode() if b else None
- r=urllib.request.Request(u,data=d,method=m,headers={{"Content-Type":"application/json"}} if d else {{}})
- return urllib.request.urlopen(r,timeout=60).read().decode()
-
-print("rr", req("POST", agent+"/api/rr/config", {{
-  "address":"10.133.153.204","remote_as":AS,"local_address":"10.133.153.200"}}))
-try:
- print("sync", req("POST", base+"/api/bgp/sync-from-frr"))
-except Exception as e:
- print("sync warn", e)
-try:
- print("down", req("PATCH", base+"/api/bgp/neighbors/default/10.133.152.204", {{
-  "remote_as":AS,"local_as":AS,"source_ip":"10.133.152.200","role":"downstream"}}))
-except Exception as e:
- print("down warn", e)
-time.sleep(4)
-print("freeze", req("GET", agent+"/api/peers/freeze-status"))
-PY
+    post = """
+echo '=== post-deploy BGP restore ==='
+# shell_sync_bgp_agent 内已调用 restore-agent；此处再拉一次 freeze 状态
+sleep 3
+curl -sf http://127.0.0.1:9179/api/peers/freeze-status | head -c 1200 || true
+echo
 """
     restart += post
 

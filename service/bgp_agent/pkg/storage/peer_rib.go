@@ -330,34 +330,85 @@ func (s *Storage) PurgePeerRoutesNotIn(ctx context.Context, window, vrf, neighbo
 	return removed, nil
 }
 
+// PeerIngestBuilder 流式灌库：边遍历 ADJ-IN 边写入，避免整表进内存。
+type PeerIngestBuilder struct {
+	s        *Storage
+	window   string
+	vrf      string
+	neighbor string
+	keep     map[string]struct{}
+	rocks    []PeerRoute
+	ingested int
+	upserts  int
+}
+
+// NewPeerIngestBuilder 开始一次 ingest 会话。
+func (s *Storage) NewPeerIngestBuilder(window, vrf, neighbor string) *PeerIngestBuilder {
+	return &PeerIngestBuilder{
+		s:        s,
+		window:   window,
+		vrf:      vrf,
+		neighbor: neighbor,
+		keep:     make(map[string]struct{}),
+		rocks:    make([]PeerRoute, 0, 1000),
+	}
+}
+
+// Add 写入或更新单条前缀（同前缀多次调用只计一次 ingested）。
+func (b *PeerIngestBuilder) Add(ctx context.Context, prefix, nexthop, aspath string, remoteAS uint32) error {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil
+	}
+	b.keep[prefix] = struct{}{}
+	b.upserts++
+	rt := PeerRoute{
+		Window:     b.window,
+		VRF:        b.vrf,
+		NeighborIP: b.neighbor,
+		Prefix:     prefix,
+		Nexthop:    nexthop,
+		ASPath:     aspath,
+		RemoteAS:   remoteAS,
+		UpdatedAt:  time.Now(),
+	}
+	isNew, err := b.s.UpsertPeerRoute(ctx, rt)
+	if err != nil {
+		return err
+	}
+	if isNew {
+		b.ingested++
+	}
+	b.rocks = append(b.rocks, rt)
+	if len(b.rocks) >= 1000 {
+		_ = b.s.PersistPeerRouteBatch(b.rocks)
+		b.rocks = b.rocks[:0]
+	}
+	return nil
+}
+
+// Finish 刷盘并删除 ADJ-IN 中已不存在的前缀。
+func (b *PeerIngestBuilder) Finish(ctx context.Context) (ingested int, removed int, err error) {
+	if len(b.rocks) > 0 {
+		_ = b.s.PersistPeerRouteBatch(b.rocks)
+		b.rocks = b.rocks[:0]
+	}
+	removed, err = b.s.PurgePeerRoutesNotIn(ctx, b.window, b.vrf, b.neighbor, b.keep)
+	return b.ingested, removed, err
+}
+
 // IngestPeerRoutes 将对端 ADJ-IN 快照写入 RIB，并删除 Adj-RIB-In 中已不存在的前缀。
 func (s *Storage) IngestPeerRoutes(ctx context.Context, window, vrf, neighbor string, routes []PeerRoute) (ingested int, removed int, err error) {
-	keep := make(map[string]struct{}, len(routes))
-	batch := make([]PeerRoute, 0, 1000)
+	b := s.NewPeerIngestBuilder(window, vrf, neighbor)
 	for _, rt := range routes {
-		rt.Window = window
-		rt.VRF = vrf
-		rt.NeighborIP = neighbor
 		if rt.Prefix == "" {
 			continue
 		}
-		keep[rt.Prefix] = struct{}{}
-		_, err := s.UpsertPeerRoute(ctx, rt)
-		if err != nil {
+		if err := b.Add(ctx, rt.Prefix, rt.Nexthop, rt.ASPath, rt.RemoteAS); err != nil {
 			continue
 		}
-		ingested++
-		batch = append(batch, rt)
-		if len(batch) >= 1000 {
-			_ = s.PersistPeerRouteBatch(batch)
-			batch = batch[:0]
-		}
 	}
-	if len(batch) > 0 {
-		_ = s.PersistPeerRouteBatch(batch)
-	}
-	removed, err = s.PurgePeerRoutesNotIn(ctx, window, vrf, neighbor, keep)
-	return ingested, removed, err
+	return b.Finish(ctx)
 }
 
 // RebuildPeerCount 从 Redis SCAN 重建计数（维护用）。

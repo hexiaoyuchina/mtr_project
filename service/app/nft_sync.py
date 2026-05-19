@@ -57,13 +57,34 @@ def _match_ipv4_cidr_nft(match_cidr: str) -> str:
     return str(net)
 
 
+def _nft_downstream_iface() -> str:
+    for key in (
+        "MTR_NFT_TE_SNAT_OIF",
+        "MTR_TE_REWRITE_OIF",
+        "MTR_BGP_IPVLAN_BASE_IFACE",
+        "MTR_OP_DOWNSTREAM_IFACE",
+    ):
+        v = (os.environ.get(key) or "").strip()
+        if v:
+            return v
+    return "ens192"
+
+
+def _nft_uplink_iface() -> str:
+    for key in ("MTR_NFT_TE_SNAT_IIF", "MTR_TE_REWRITE_IIF", "MTR_BGP_RR_UPLINK_IFACE"):
+        v = (os.environ.get(key) or "").strip()
+        if v:
+            return v
+    return "ens224"
+
+
 def _extra_matches(include_vrf: bool) -> list[str]:
     """环境变量附加匹配。"""
     extra: list[str] = []
-    oif = (os.environ.get("MTR_NFT_TE_SNAT_OIF") or "").strip()
+    oif = (os.environ.get("MTR_NFT_TE_SNAT_OIF") or "").strip() or _nft_downstream_iface()
     if oif:
         extra.extend(["oifname", oif])
-    iif = (os.environ.get("MTR_NFT_TE_SNAT_IIF") or "").strip()
+    iif = (os.environ.get("MTR_NFT_TE_SNAT_IIF") or "").strip() or _nft_uplink_iface()
     if iif:
         extra.extend(["iifname", iif])
     vrf = (os.environ.get("MTR_NFT_TE_SNAT_VRF") or "").strip()

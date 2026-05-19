@@ -15,7 +15,11 @@ Environment=MTR_SATELLITE_BGP_TCP_SOURCE=spoof
 Environment=MTR_BGP_IPVLAN_AUTO=1
 Environment=MTR_BGP_IPVLAN_BASE_IFACE=eno1np0
 Environment=MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0
+Environment=MTR_BGP_RR_SPOOF_IPVLAN_ADDR=0
 Environment=MTR_BGP_IPVLAN_PEER_IP=139.159.43.208
+Environment=MTR_TE_REWRITE_OIF=eno1np0
+Environment=MTR_TE_REWRITE_IIF=enp59s0f0np0
+Environment=MTR_OP_DOWNSTREAM_IFACE=eno1np0
 ExecStart=/root/mtr_op/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8808
 Restart=on-failure
 RestartSec=3

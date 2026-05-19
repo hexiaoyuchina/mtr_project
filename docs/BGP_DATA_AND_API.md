@@ -226,6 +226,7 @@
 | `MTR_BGP_UPSTREAM_CACHE_VRF` | `gobgp-rr` | 上游学习 VRF / stale 合并范围 |
 | `MTR_BGP_IPVLAN_BASE_IFACE` | `eno1np0` | 下游 ipvlan 父口 |
 | `MTR_BGP_RR_UPLINK_IFACE` | `enp59s0f0np0` | 真 RR 二层口 |
+| `MTR_BGP_RR_SPOOF_IPVLAN_ADDR` | `0` | `1` 时上下联隔离：在下游 `iv*` 挂 RR `/32`，删主表 `249→上联` |
 | `MTR_BGP_IPVLAN_PEER_IP` | 现网 208 | 下游对端地址 |
 | `MTR_BGP_ROLE_MAP` | — | `ip:role` 逗号分隔默认角色 |
 | `MTR_BGP_DB_PRESETS` | — | `vrf:ip:role` 预设写入 meta |

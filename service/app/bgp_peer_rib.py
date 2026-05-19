@@ -1,9 +1,18 @@
 """bgp-agent 按 peer 百万级 RIB（Redis/RocksDB）OP 侧封装。"""
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import bgp_control, storage
+
+
+def _ingest_timeout() -> float:
+    raw = (os.environ.get("MTR_BGP_INGEST_TIMEOUT") or "7200").strip()
+    try:
+        return max(120.0, float(raw))
+    except ValueError:
+        return 7200.0
 
 
 def peer_route_window(role: str) -> str:
@@ -190,7 +199,7 @@ def ingest_peer_routes(vrf: str, neighbor_ip: str, role: str) -> Dict[str, Any]:
                 "vrf": storage.validate_vrf_name(vrf),
                 "neighbor_ip": storage.validate_ipv4(neighbor_ip),
             },
-            timeout=600.0,
+            timeout=_ingest_timeout(),
         )
         if r.status_code >= 400:
             raise RuntimeError(r.text or f"HTTP {r.status_code}")
@@ -212,19 +221,30 @@ def start_rib_advertise_job(
     target_vrf: str = "",
     enable: bool = True,
     batch_size: int = 5000,
+    src_peers: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """启动 Agent 流式通告/撤销任务（IteratePeerRoutes，非分页 HTTP）。"""
     bgp_control.require_agent()
-    body = {
+    body: Dict[str, Any] = {
         "task_id": task_id,
-        "src_window": src_window,
-        "src_vrf": storage.validate_vrf_name(src_vrf),
-        "src_neighbor_ip": storage.validate_ipv4(src_neighbor_ip),
         "target": target,
         "target_vrf": storage.validate_vrf_name(target_vrf) if target_vrf else "",
         "enable": bool(enable),
         "batch_size": batch_size,
     }
+    if src_peers:
+        body["src_peers"] = [
+            {
+                "window": str(p.get("window") or "downstream"),
+                "vrf": storage.validate_vrf_name(str(p["vrf"])),
+                "neighbor_ip": storage.validate_ipv4(str(p["neighbor_ip"])),
+            }
+            for p in src_peers
+        ]
+    else:
+        body["src_window"] = src_window
+        body["src_vrf"] = storage.validate_vrf_name(src_vrf)
+        body["src_neighbor_ip"] = storage.validate_ipv4(src_neighbor_ip)
     path = "/api/rib/advertise" if enable else "/api/rib/withdraw"
     with bgp_control._client() as c:
         r = c.post(path, json=body, timeout=60.0)

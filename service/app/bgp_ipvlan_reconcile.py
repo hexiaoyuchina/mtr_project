@@ -320,8 +320,54 @@ def is_rr_spoof_ip(ip: str) -> bool:
         return False
 
 
+def is_uplink_rr_neighbor_ip(ip: str) -> bool:
+    """真 RR（ROS）对端地址：不得对其 :179 做卫星 DNAT，否则破坏 RX 建连。"""
+    ip_n = (ip or "").strip()
+    if not ip_n:
+        return False
+    for env_key in ("RR_ADDR", "MTR_FORM_RR_HINT"):
+        hint = (os.environ.get(env_key) or "").strip()
+        if not hint:
+            continue
+        try:
+            if str(ipaddress.ip_address(ip_n)) == str(ipaddress.ip_address(hint)):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def rr_uplink_iface() -> str:
+    return (os.environ.get("MTR_BGP_RR_UPLINK_IFACE") or "").strip()
+
+
+def should_satellite_dnat_spoof_ip(spoof_ip: str, base_iface: str = "") -> bool:
+    """入站 :179→TX。与 ROS RR 同址时禁止在上联口 DNAT，但允许在下游父口（如 ens192）上 DNAT。"""
+    if not is_uplink_rr_neighbor_ip(spoof_ip):
+        return True
+    iface = (base_iface or "").strip()
+    uplink = rr_uplink_iface()
+    if iface and uplink and iface != uplink:
+        return True
+    if iface and not uplink:
+        return True
+    return False
+
+
 def rr_spoof_passive_enabled() -> bool:
     return os.environ.get("MTR_BGP_RR_SPOOF_PASSIVE", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def rr_spoof_ipvlan_addr_enabled() -> bool:
+    """上联/下联二层隔离时，在下游 iv 上挂 RR 地址 /32（可 ping、与 .24 同逻辑）。"""
+    return os.environ.get("MTR_BGP_RR_SPOOF_IPVLAN_ADDR", "0").strip().lower() not in {
+        "",
+        "0",
+        "off",
+        "false",
+        "no",
+        "none",
+    }
 
 
 def tx_listen_port_for_vrf(vrf: str, base: int = 1790) -> int:
@@ -349,6 +395,131 @@ def _satellite_dnat_use_iif() -> bool:
     return os.environ.get("MTR_BGP_SAT_DNAT_IIF", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _nft_ensure_dnat_chain(steps: List[Dict[str, Any]]) -> None:
+    def step(name: str, cmd: List[str]) -> bool:
+        rc, out = _run(cmd, timeout=12)
+        ok = rc == 0 or "exists" in (out or "").lower() or "No such" in (out or "")
+        steps.append({"name": name, "cmd": cmd, "rc": rc, "ok": ok, "error": out[:200] if not ok else ""})
+        return ok
+
+    step("drop_legacy_rr_table", ["nft", "delete", "table", "inet", _LEGACY_RR_DNAT_TABLE])
+    step("nft_table", ["nft", "add", "table", "inet", _DNAT_TABLE])
+    step(
+        "nft_chain",
+        [
+            "nft",
+            "add",
+            "chain",
+            "inet",
+            _DNAT_TABLE,
+            "prerouting",
+            "{ type nat hook prerouting priority -100; policy accept; }",
+        ],
+    )
+
+
+def _nft_delete_dnat_for_daddr(spoof_ip: str) -> List[int]:
+    """仅删除 prerouting 中匹配该 daddr 的 redirect 规则（不 flush 整链）。"""
+    try:
+        ip_n = str(ipaddress.ip_address((spoof_ip or "").strip()))
+    except ValueError:
+        return []
+    rc, out = _run(["nft", "-a", "list", "chain", "inet", _DNAT_TABLE, "prerouting"], timeout=12)
+    if rc != 0:
+        return []
+    deleted: List[int] = []
+    for line in out.splitlines():
+        if ip_n not in line or "daddr" not in line:
+            continue
+        if "# handle" not in line:
+            continue
+        try:
+            handle = int(line.rsplit("handle", 1)[-1].strip())
+        except ValueError:
+            continue
+        drc, _ = _run(
+            ["nft", "delete", "rule", "inet", _DNAT_TABLE, "prerouting", "handle", str(handle)],
+            timeout=8,
+        )
+        if drc == 0:
+            deleted.append(handle)
+    return deleted
+
+
+def _reconcile_satellite_dnat_row(row: Dict[str, str], steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    spoof_ip = row["spoof_ip"]
+    base_iface = (row.get("base_iface") or "").strip()
+    if not should_satellite_dnat_spoof_ip(spoof_ip, base_iface):
+        return {
+            "spoof_ip": spoof_ip,
+            "vrf": row.get("vrf") or "",
+            "skipped": True,
+            "reason": "uplink_rr_ip",
+            "ok": True,
+        }
+    vrf = row["vrf"] or satellite_vrf_name(spoof_ip)
+    port = tx_listen_port_for_vrf(vrf)
+    use_iif = _satellite_dnat_use_iif() or bool(base_iface)
+
+    def step(name: str, cmd: List[str]) -> bool:
+        rc, out = _run(cmd, timeout=12)
+        ok = rc == 0 or "exists" in (out or "").lower() or "No such" in (out or "")
+        steps.append({"name": name, "cmd": cmd, "rc": rc, "ok": ok, "error": out[:200] if not ok else ""})
+        return ok
+
+    _nft_delete_dnat_for_daddr(spoof_ip)
+    rule_cmd: List[str] = ["nft", "add", "rule", "inet", _DNAT_TABLE, "prerouting"]
+    if use_iif and base_iface:
+        rule_cmd.extend(["iifname", base_iface])
+    rule_cmd.extend(
+        ["ip", "daddr", spoof_ip, "tcp", "dport", "179", "redirect", "to", f":{port}"]
+    )
+    ok = step(f"redirect_{spoof_ip}", rule_cmd)
+    return {
+        "spoof_ip": spoof_ip,
+        "vrf": vrf,
+        "redirect_port": port,
+        "iif": base_iface if use_iif else "",
+        "ok": ok,
+        "scope": "single",
+    }
+
+
+def reconcile_satellite_dnat_for_spoof(db_path: Path, spoof_ip: str) -> Dict[str, Any]:
+    """仅更新单个冒充 IP 的 DNAT 规则，不 flush 其它卫星条目。"""
+    if not satellite_dnat_enabled():
+        return {"skipped": True, "reason": "MTR_BGP_SAT_DNAT_AUTO off"}
+    try:
+        ip_n = str(ipaddress.ip_address((spoof_ip or "").strip()))
+    except ValueError:
+        return {"skipped": True, "reason": "invalid_spoof_ip"}
+    db_path = Path(db_path).expanduser()
+    rows = [r for r in _read_enabled_satellite_rows(db_path) if r["spoof_ip"] == ip_n]
+    steps: List[Dict[str, Any]] = []
+    if not rows:
+        deleted = _nft_delete_dnat_for_daddr(ip_n)
+        return {"ok": True, "spoof_ip": ip_n, "deleted_handles": deleted, "rules": [], "steps": steps}
+    _nft_ensure_dnat_chain(steps)
+    rules = [_reconcile_satellite_dnat_row(row, steps) for row in rows]
+    return {
+        "ok": all(r.get("ok", True) for r in rules),
+        "spoof_ip": ip_n,
+        "rules": rules,
+        "steps": steps,
+        "scope": "single",
+    }
+
+
+def delete_satellite_dnat_for_spoof(spoof_ip: str) -> Dict[str, Any]:
+    """删除单个冒充 IP 的 DNAT 规则。"""
+    try:
+        ip_n = str(ipaddress.ip_address((spoof_ip or "").strip()))
+    except ValueError:
+        return {"skipped": True, "reason": "invalid_spoof_ip"}
+    deleted = _nft_delete_dnat_for_daddr(ip_n)
+    return {"ok": True, "spoof_ip": ip_n, "deleted_handles": deleted, "scope": "single"}
+
+
 def reconcile_satellite_dnat(db_path: Path) -> Dict[str, Any]:
     """
     为所有卫星冒充 IP 安装入站 :179 → TX 监听端口的 nft redirect（201 主动连标准 179 时必需）。
@@ -366,67 +537,14 @@ def reconcile_satellite_dnat(db_path: Path) -> Dict[str, Any]:
         steps.append({"name": name, "cmd": cmd, "rc": rc, "ok": ok, "error": out[:200] if not ok else ""})
         return ok
 
-    step("drop_legacy_rr_table", ["nft", "delete", "table", "inet", _LEGACY_RR_DNAT_TABLE])
     if not rows:
         step("drop_dnat_table", ["nft", "delete", "table", "inet", _DNAT_TABLE])
-        return {"ok": True, "rules": [], "steps": steps}
+        return {"ok": True, "rules": [], "steps": steps, "scope": "global"}
 
-    step("nft_table", ["nft", "add", "table", "inet", _DNAT_TABLE])
-    # 链定义须为单个参数，否则 ``priority -100`` 会被拆成 ``-1`` 与 ``00`` 导致 nft 报错
-    step(
-        "nft_chain",
-        [
-            "nft",
-            "add",
-            "chain",
-            "inet",
-            _DNAT_TABLE,
-            "prerouting",
-            "{ type nat hook prerouting priority -100; policy accept; }",
-        ],
-    )
+    _nft_ensure_dnat_chain(steps)
     step("nft_flush", ["nft", "flush", "chain", "inet", _DNAT_TABLE, "prerouting"])
-    use_iif = _satellite_dnat_use_iif()
-    rules: List[Dict[str, Any]] = []
-    for row in rows:
-        spoof_ip = row["spoof_ip"]
-        vrf = row["vrf"] or satellite_vrf_name(spoof_ip)
-        port = tx_listen_port_for_vrf(vrf)
-        base_iface = (row.get("base_iface") or "").strip()
-        rule_cmd: List[str] = [
-            "nft",
-            "add",
-            "rule",
-            "inet",
-            _DNAT_TABLE,
-            "prerouting",
-        ]
-        if use_iif and base_iface:
-            rule_cmd.extend(["iifname", base_iface])
-        rule_cmd.extend(
-            [
-                "ip",
-                "daddr",
-                spoof_ip,
-                "tcp",
-                "dport",
-                "179",
-                "redirect",
-                "to",
-                f":{port}",
-            ]
-        )
-        ok = step(f"redirect_{spoof_ip}", rule_cmd)
-        rules.append(
-            {
-                "spoof_ip": spoof_ip,
-                "vrf": vrf,
-                "redirect_port": port,
-                "iif": base_iface if use_iif else "",
-                "ok": ok,
-            }
-        )
-    return {"ok": all(r.get("ok", True) for r in rules), "rules": rules, "steps": steps}
+    rules = [_reconcile_satellite_dnat_row(row, steps) for row in rows]
+    return {"ok": all(r.get("ok", True) for r in rules), "rules": rules, "steps": steps, "scope": "global"}
 
 
 def ensure_rr_spoof_dnat(
@@ -480,6 +598,80 @@ def _ensure_peer_static_neigh(peer: str, iv: str, base_iface: str) -> Dict[str, 
         "ok": rc3 == 0,
         "error": out3[:200] if rc3 != 0 else "",
     }
+
+
+def _delete_rule_pref(priority: int) -> None:
+    _run(["ip", "-4", "rule", "del", "pref", str(priority)], timeout=8)
+
+
+def purge_conflicting_lab_policy_rules() -> Dict[str, Any]:
+    """
+    清除会破坏卫星冒充源出站的策略（如 setup_201 写入的 pref 43/44）。
+    与 RR 上联 pref 45/50 无关。
+    """
+    base = (os.environ.get("MTR_BGP_IPVLAN_BASE_IFACE") or "ens192").strip()
+    deleted: List[str] = []
+    for pref in (43, 44):
+        _delete_rule_pref(pref)
+        deleted.append(f"pref_{pref}")
+    _run(
+        ["ip", "-4", "rule", "del", "pref", "43", "iif", base, "lookup", "2103"],
+        timeout=8,
+    )
+    _run(["ip", "-4", "rule", "del", "from", "10.133.152.0/24", "lookup", "2103"], timeout=8)
+    return {"ok": True, "deleted": deleted}
+
+
+def ensure_rr_uplink_policy_rules() -> Dict[str, Any]:
+    """上联 RR：207->249 走 table 2103（避免下游 iv local 抢路由）。本端地址由上联口 netplan /24 提供，不在此 add /32。"""
+    uplink = rr_uplink_iface() or (os.environ.get("MTR_BGP_RR_UPLINK_IFACE") or "ens224").strip()
+    rr_dst = (os.environ.get("RR_ADDR") or "").strip()
+    rr_src = _rr_local_bgp_ip()
+    if not uplink or not rr_dst or not rr_src:
+        return {"skipped": True, "reason": "rr_env_incomplete"}
+    try:
+        str(ipaddress.ip_address(rr_dst))
+        str(ipaddress.ip_address(rr_src))
+    except ValueError:
+        return {"skipped": True, "reason": "rr_ip_invalid"}
+    _run(["ip", "link", "set", uplink, "up"], timeout=8)
+    # 清理旧版收敛写入的 /32，避免与 netplan 的 /24 并存
+    _run(["ip", "addr", "del", f"{rr_src}/32", "dev", uplink], timeout=8)
+    for pref in (45, 50):
+        _delete_rule_pref(pref)
+    _run(
+        [
+            "ip",
+            "-4",
+            "rule",
+            "add",
+            "pref",
+            "45",
+            "from",
+            rr_src,
+            "to",
+            rr_dst,
+            "lookup",
+            "2103",
+        ],
+        timeout=8,
+    )
+    _run(["ip", "-4", "rule", "add", "pref", "50", "from", rr_src, "lookup", "2103"], timeout=8)
+    _run(
+        ["ip", "route", "replace", "table", "2103", f"{rr_dst}/32", "dev", uplink, "src", rr_src],
+        timeout=8,
+    )
+    return {"ok": True, "uplink": uplink, "rr_src": rr_src, "rr_dst": rr_dst}
+
+
+def ensure_lab_network_stack(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """ARP/BGP 写库后统一收敛：清冲突策略 + RR 上联 +（调用方再 reconcile 单 VRF）。"""
+    del db_path  # 预留：后续可按库校正 table 2103
+    base = (os.environ.get("MTR_BGP_IPVLAN_BASE_IFACE") or "ens192").strip()
+    _run(["ip", "link", "set", base, "up"], timeout=8)
+    purged = purge_conflicting_lab_policy_rules()
+    rr = ensure_rr_uplink_policy_rules()
+    return {"ok": True, "purged": purged, "rr_uplink": rr}
 
 
 def _delete_rules_for_spoof(spoof_ip: str) -> List[Dict[str, Any]]:
@@ -669,9 +861,9 @@ def _ensure_one(
     if not run_step("set_ipvlan_master", ["ip", "link", "set", iv, "master", vrf]):
         return {"spoof_ip": spoof_ip, "vrf": vrf, "ipvlan": iv, "error": "set_master_failed", "steps": cmds}
     run_step("flush_ipvlan_addr", ["ip", "addr", "flush", "dev", iv], timeout=8)
-    # 冒充 RR(249) 时不在 iv 上挂 /32，避免本机把 249 当本地地址导致真 RR(207→249) 无法建连；
-    # 下游 TX 用 bind_interface + ip_nonlocal_bind + vrf 路由 src=249。
-    if is_rr_spoof_ip(spoof_ip):
+    # 默认：冒充 RR(249) 不在 iv 挂 /32，主表指向上联，避免与真 RR(207→249) 同 L2 冲突。
+    # MTR_BGP_RR_SPOOF_IPVLAN_ADDR=1：上下联隔离时在下联 iv 挂 /32（与卫星 .24 一致，可本地应答 ICMP）。
+    if is_rr_spoof_ip(spoof_ip) and not rr_spoof_ipvlan_addr_enabled():
         run_step("nonlocal_bind", ["sysctl", "-w", "net.ipv4.ip_nonlocal_bind=1"], timeout=8)
         uplink = _rr_uplink_iface()
         if uplink and _iface_exists(uplink):
@@ -680,8 +872,11 @@ def _ensure_one(
                 ["ip", "route", "replace", f"{spoof_ip}/32", "dev", uplink],
                 timeout=8,
             )
-    elif not run_step("add_ipvlan_addr", ["ip", "addr", "add", f"{spoof_ip}/32", "dev", iv]):
-        return {"spoof_ip": spoof_ip, "vrf": vrf, "ipvlan": iv, "error": "add_ipvlan_addr_failed", "steps": cmds}
+    else:
+        if is_rr_spoof_ip(spoof_ip):
+            run_step("del_main_rr_host_route", ["ip", "route", "del", f"{spoof_ip}/32"], timeout=8)
+        if not run_step("add_ipvlan_addr", ["ip", "addr", "add", f"{spoof_ip}/32", "dev", iv]):
+            return {"spoof_ip": spoof_ip, "vrf": vrf, "ipvlan": iv, "error": "add_ipvlan_addr_failed", "steps": cmds}
     run_step("up_ipvlan", ["ip", "link", "set", iv, "up"])
     run_step("rp_filter_ipvlan", ["sysctl", "-w", f"net.ipv4.conf.{iv}.rp_filter=0"], timeout=8)
 
@@ -723,6 +918,26 @@ def _ensure_one(
     if not run_step("route_peer_host", ["ip", "route", "replace", "vrf", vrf, f"{peer_norm}/32", "dev", iv, "src", spoof_ip]):
         return {"spoof_ip": spoof_ip, "vrf": vrf, "ipvlan": iv, "error": "route_peer_host_failed", "steps": cmds}
     run_step("route_peer_cidr", ["ip", "route", "replace", "vrf", vrf, peer_cidr, "dev", iv, "src", spoof_ip])
+    if _should_policy_route_spoof(spoof_ip):
+        pref_sp = 32 + (int(last) % 12)
+        run_step(
+            "rule_spoof_to_peer",
+            [
+                "ip",
+                "-4",
+                "rule",
+                "add",
+                "pref",
+                str(pref_sp),
+                "from",
+                spoof_ip,
+                "to",
+                peer_norm,
+                "lookup",
+                str(table),
+            ],
+            ignore_exists=True,
+        )
     run_step("flush_route_cache", ["ip", "route", "flush", "cache"], timeout=8)
 
     return {
@@ -763,6 +978,7 @@ def reconcile_from_op_database(db_path: Path) -> Dict[str, Any]:
     if not enabled():
         return {"skipped": True, "reason": "MTR_BGP_IPVLAN_AUTO off"}
     db_path = Path(db_path).expanduser()
+    ensure_lab_network_stack(db_path)
     if _ensure_arp_spoof_global_enabled(db_path):
         logger.info("bgp_ipvlan: auto-enabled arp_spoof_settings for RR spoof downstream")
     rows = _read_enabled_satellite_rows(db_path)
@@ -805,10 +1021,16 @@ def reconcile_vrf_from_op_database(
     used_tables = set(_kernel_vrf_tables().values())
     items = [_ensure_one(row, state, used_tables, dbp, peer_ip=peer_ip) for row in rows]
     _save_state(st_path, state)
-    dnat = reconcile_satellite_dnat(dbp)
+    dnat_results = [reconcile_satellite_dnat_for_spoof(dbp, row["spoof_ip"]) for row in rows]
+    dnat = {
+        "ok": all(r.get("ok", True) for r in dnat_results),
+        "rules": dnat_results,
+        "scope": "single_vrf",
+    }
     return {
         "ok": all(not x.get("error") for x in items) and dnat.get("ok", True) is not False,
         "items": items,
         "dnat": dnat,
         "peer_known": bool(peer_ip_for_vrf(dbp, vrf_n, peer_ip)),
+        "scope": "single_vrf",
     }

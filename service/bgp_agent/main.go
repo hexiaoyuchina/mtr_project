@@ -45,24 +45,18 @@ func main() {
 	}
 	defer store.Close()
 
-	// 启动Route Processor
 	proc := processor.NewProcessor(store)
-	if err := proc.Start(ctx); err != nil {
-		log.Fatalf("启动Route Processor失败: %v", err)
-	}
 
 	// 启动GoBGP RX（从RR接收路由）
 	rxAgent, err := rx.NewRxAgent(&rx.Config{
-		LocalAS:  uint32(*localAs),
-		RouterID: *routerId,
-		RRAddr:   *rrAddr,
-		RRAS:     uint32(*rrAs),
+		LocalAS:      uint32(*localAs),
+		RouterID:     *routerId,
+		LocalAddress: *routerId,
+		RRAddr:       *rrAddr,
+		RRAS:         uint32(*rrAs),
 	}, proc)
 	if err != nil {
 		log.Fatalf("创建RX Agent失败: %v", err)
-	}
-	if err := rxAgent.Start(ctx); err != nil {
-		log.Fatalf("启动RX Agent失败: %v", err)
 	}
 
 	// TX 池：按 VRF 懒创建（卫星 VRF 多会话，对应原 FRR 多实例）
@@ -70,17 +64,24 @@ func main() {
 		LocalAS:  uint32(*localAs),
 		RouterID: *routerId,
 	}, store, 1790, proc)
-	if _, err := txPool.GetOrCreateDefault(ctx); err != nil {
-		log.Printf("默认 TX 实例启动: %v", err)
-	}
 
-	// 启动管理API
+	// 管理 API 先监听，避免 Processor 从 RocksDB 恢复百万路由期间 OP 判定 agent 不可用
 	apiServer := NewAPIServer(*apiAddr, proc, rxAgent, txPool, store)
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			log.Printf("API服务错误: %v", err)
 		}
 	}()
+
+	if err := proc.Start(ctx); err != nil {
+		log.Fatalf("启动Route Processor失败: %v", err)
+	}
+	if err := rxAgent.Start(ctx); err != nil {
+		log.Fatalf("启动RX Agent失败: %v", err)
+	}
+	if _, err := txPool.GetOrCreateDefault(ctx); err != nil {
+		log.Printf("默认 TX 实例启动: %v", err)
+	}
 
 	watchSec := 15
 	if v := os.Getenv("MTR_BGP_PEER_WATCH_SEC"); v != "" {

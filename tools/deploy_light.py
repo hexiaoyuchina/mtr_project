@@ -109,11 +109,15 @@ def upload_bgp_agent_tree(sftp: paramiko.SFTPClient, local_dir: Path, remote_dir
 def main() -> None:
     service_dir = ROOT / "service"
     nfq = ROOT / "scripts" / "mtr_spoof_nfqueue.py"
+    te_nfq = ROOT / "scripts" / "te_rewrite_nfqueue.py"
     if not service_dir.is_dir():
         print("missing service/", file=sys.stderr)
         sys.exit(1)
     if not nfq.is_file():
         print("missing scripts/mtr_spoof_nfqueue.py", file=sys.stderr)
+        sys.exit(1)
+    if not te_nfq.is_file():
+        print("missing scripts/te_rewrite_nfqueue.py", file=sys.stderr)
         sys.exit(1)
 
     print(f"Connecting {USER}@{HOST} ...", flush=True)
@@ -122,6 +126,7 @@ def main() -> None:
     try:
         upload_tree(sftp, service_dir, REMOTE)
         sftp.put(str(nfq), f"{REMOTE}/mtr_spoof_nfqueue.py")
+        sftp.put(str(te_nfq), f"{REMOTE}/te_rewrite_nfqueue.py")
     finally:
         sftp.close()
 
@@ -132,6 +137,15 @@ export GOBGP_AGENT_URL=http://127.0.0.1:9179
 export MTR_OP_DB={REMOTE}/data.db
 export MTR_OP_NFT={REMOTE}/nft_mtr_spoof.nft
 export MTR_OP_DATA={REMOTE}/data
+export MTR_BGP_IPVLAN_AUTO=1
+export MTR_BGP_IPVLAN_BASE_IFACE={os.environ.get("MTR_BGP_IPVLAN_BASE_IFACE", "eno1np0").strip()}
+export MTR_BGP_RR_UPLINK_IFACE={os.environ.get("MTR_BGP_RR_UPLINK_IFACE", "enp59s0f0np0").strip()}
+export MTR_OP_DOWNSTREAM_IFACE={os.environ.get("MTR_OP_DOWNSTREAM_IFACE", os.environ.get("MTR_BGP_IPVLAN_BASE_IFACE", "eno1np0")).strip()}
+export MTR_TE_REWRITE_OIF={os.environ.get("MTR_TE_REWRITE_OIF", os.environ.get("MTR_BGP_IPVLAN_BASE_IFACE", "eno1np0")).strip()}
+export MTR_TE_REWRITE_IIF={os.environ.get("MTR_TE_REWRITE_IIF", os.environ.get("MTR_BGP_RR_UPLINK_IFACE", "enp59s0f0np0")).strip()}
+export MTR_BGP_RR_SPOOF_IPVLAN_ADDR={os.environ.get("MTR_BGP_RR_SPOOF_IPVLAN_ADDR", "0").strip()}
+export MTR_BGP_IPVLAN_PEER_IP={os.environ.get("MTR_BGP_IPVLAN_PEER_IP", "139.159.43.208").strip()}
+export RR_ADDR={os.environ.get("RR_ADDR", "139.159.43.249").strip()}
 if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi
 $PY - <<'INITSCHEMA'
 import os, sys
@@ -151,7 +165,12 @@ nft delete table inet mtr_spoof 2>/dev/null || true
 [ -f nft_mtr_spoof.nft ] && nft -f nft_mtr_spoof.nft || echo "WARN: nft load skipped"
 : > /tmp/mtr_op.log
 if [ -x ./venv/bin/uvicorn ]; then UV=./venv/bin/uvicorn; else UV='python3 -m uvicorn'; fi
-nohup $UV app.main:app --host 0.0.0.0 --port 8808 >> /tmp/mtr_op.log 2>&1 &
+nohup env MTR_OP_DB="$MTR_OP_DB" MTR_OP_NFT="$MTR_OP_NFT" \\
+  MTR_BGP_IPVLAN_BASE_IFACE="$MTR_BGP_IPVLAN_BASE_IFACE" \\
+  MTR_BGP_RR_UPLINK_IFACE="$MTR_BGP_RR_UPLINK_IFACE" \\
+  MTR_OP_DOWNSTREAM_IFACE="$MTR_OP_DOWNSTREAM_IFACE" \\
+  MTR_TE_REWRITE_OIF="$MTR_TE_REWRITE_OIF" MTR_TE_REWRITE_IIF="$MTR_TE_REWRITE_IIF" \\
+  $UV app.main:app --host 0.0.0.0 --port 8808 >> /tmp/mtr_op.log 2>&1 &
 sleep 5
 for i in 1 2 3 4 5 6 7 8 9 10; do
   curl -sf http://127.0.0.1:8808/health >/dev/null && break
@@ -161,7 +180,9 @@ done
 nohup $PY mtr_spoof_nfqueue.py --op-db {REMOTE}/data.db --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
 sleep 2
 curl -sS http://127.0.0.1:8808/health; echo
-pgrep -af 'uvicorn|mtr_spoof' || true
+echo '=== mangle FORWARD NFQUEUE (expect eno1np0 / enp59s0f0np0) ==='
+iptables -t mangle -S FORWARD 2>/dev/null | grep -E 'NFQUEUE|eno1np0|enp59s0f0np0|ens192|ens224' || true
+pgrep -af 'uvicorn|mtr_spoof|te_rewrite' || true
 """
     rebuild_bgp = os.environ.get("MTR_DEPLOY_BUILD_BGP_AGENT", "1").strip().lower() not in {
         "0",

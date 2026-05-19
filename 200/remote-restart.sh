@@ -22,8 +22,19 @@ export MTR_AUTO_SATELLITE_VRF_NOTE="${MTR_AUTO_SATELLITE_VRF_NOTE:-BGPSAT}"
 export MTR_BGP_RIB_SYNC="${MTR_BGP_RIB_SYNC:-1}"
 export MTR_BGP_RIB_SYNC_SEC="${MTR_BGP_RIB_SYNC_SEC:-60}"
 export MTR_PROBE_SSH_HOST="${MTR_PROBE_SSH_HOST:-10.133.151.200}"
+export MTR_TE_PROBE_RETURN_VIA_200="${MTR_TE_PROBE_RETURN_VIA_200:-0}"
+export MTR_TE_PROBE_SRC="${MTR_TE_PROBE_SRC:-10.133.152.204}"
+export MTR_TE_RETURN_IP="${MTR_TE_RETURN_IP:-10.133.152.200}"
+export MTR_TE_REWRITE_IIF="${MTR_TE_REWRITE_IIF:-ens224}"
+export MTR_TE_REWRITE_PEER_HOSTS="${MTR_TE_REWRITE_PEER_HOSTS:-}"
+export MTR_TE_REWRITE_PEER_QUEUE="${MTR_TE_REWRITE_PEER_QUEUE:-2}"
+export MTR_TE_REWRITE_PEER_SCRIPT="${MTR_TE_REWRITE_PEER_SCRIPT:-/root/te_rewrite_nfqueue.py}"
+# 由 deploy 注入，供 peer SSH（勿提交明文密码到仓库）
+export MTR_OP_SSH_PASSWORD="${MTR_OP_SSH_PASSWORD:-}"
 export MTR_BGP_ROLE_MAP="${MTR_BGP_ROLE_MAP:-10.133.153.204:rr,10.133.152.204:downstream}"
 export MTR_BGP_DB_PRESETS="${MTR_BGP_DB_PRESETS:-default:10.133.153.204:rr,default:10.133.152.204:downstream}"
+export MTR_BGP_NEIGHBORS_FAST_LIST="${MTR_BGP_NEIGHBORS_FAST_LIST:-1}"
+export MTR_BGP_NEIGHBORS_AGENT_TIMEOUT="${MTR_BGP_NEIGHBORS_AGENT_TIMEOUT:-12}"
 
 if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi
 $PY - <<'INITSCHEMA'
@@ -62,6 +73,15 @@ done
 
 : > /tmp/mtr_spoof_nfqueue.log
 nohup $PY mtr_spoof_nfqueue.py --op-db "$MTR_OP_DB" --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
+pkill -f arp_spoof_daemon.py 2>/dev/null || true
+: > /tmp/arp_spoof_daemon.log
+if [ -f scripts/arp_spoof_daemon.py ]; then
+  nohup $PY scripts/arp_spoof_daemon.py --op-db "$MTR_OP_DB" >> /tmp/arp_spoof_daemon.log 2>&1 &
+elif [ -f arp_spoof_daemon.py ]; then
+  nohup $PY arp_spoof_daemon.py --op-db "$MTR_OP_DB" >> /tmp/arp_spoof_daemon.log 2>&1 &
+else
+  echo "WARN: arp_spoof_daemon.py missing — ARP 引流 GARP 不会发送"
+fi
 sleep 2
 curl -sS http://127.0.0.1:8808/health; echo
-pgrep -af 'uvicorn app.main|mtr_spoof' || true
+pgrep -af 'uvicorn app.main|mtr_spoof|arp_spoof' || true

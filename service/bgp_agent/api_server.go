@@ -24,6 +24,11 @@ type APIServer struct {
 
 	ribJobsMu sync.Mutex
 	ribJobs   map[string]*ribAdvertiseJob
+
+	ingestMu       sync.Mutex
+	ingestInflight map[string]bool
+	rrWasUp        map[string]bool
+	dsWasUp        map[string]bool
 }
 
 // NewAPIServer 创建API服务器
@@ -35,12 +40,16 @@ func NewAPIServer(
 	store *storage.Storage,
 ) *APIServer {
 	s := &APIServer{
-		addr:      addr,
-		processor: proc,
-		rxAgent:   rxAgent,
-		txPool:    txPool,
-		storage:   store,
-		mux:       http.NewServeMux(),
+		addr:           addr,
+		processor:      proc,
+		rxAgent:        rxAgent,
+		txPool:         txPool,
+		storage:        store,
+		mux:            http.NewServeMux(),
+		ribJobs:        make(map[string]*ribAdvertiseJob),
+		ingestInflight: make(map[string]bool),
+		rrWasUp:        make(map[string]bool),
+		dsWasUp:        make(map[string]bool),
 	}
 	s.registerRoutes()
 	return s

@@ -67,11 +67,35 @@ UNIT
 systemctl daemon-reload
 systemctl enable bgp-agent 2>/dev/null || true
 systemctl restart bgp-agent
-sleep 3
 echo "bgp-agent unit: local-as={cfg['local_as']} rid={cfg['router_id']} (RR via OP)"
 systemctl is-active bgp-agent
-curl -sf http://127.0.0.1:9179/health && echo " bgp-agent health OK" || {{ echo "bgp-agent health FAIL"; exit 1; }}
+AGENT_OK=0
+for i in $(seq 1 120); do
+  if curl -sf http://127.0.0.1:9179/health >/dev/null 2>&1; then
+    echo " bgp-agent health OK (wait=${{i}}x5s)"
+    AGENT_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ "$AGENT_OK" != 1 ]; then
+  echo "bgp-agent health FAIL (timeout 600s)"
+  exit 1
+fi
 echo "bgp-agent status:"
-curl -sf http://127.0.0.1:9179/api/status || {{ echo "bgp-agent status FAIL"; exit 1; }}
+curl -sf http://127.0.0.1:9179/api/status | head -c 500 || {{ echo "bgp-agent status FAIL"; exit 1; }}
 echo ""
+OP_OK=0
+for i in $(seq 1 30); do
+  if curl -sf http://127.0.0.1:8808/health >/dev/null 2>&1; then
+    OP_OK=1
+    break
+  fi
+  sleep 2
+done
+if [ "$OP_OK" = 1 ]; then
+  echo "bgp restore-agent:"
+  curl -sf -X POST http://127.0.0.1:8808/api/bgp/restore-agent -H 'Content-Type: application/json' -d '{{}}' | head -c 800 || echo "restore warn"
+  echo ""
+fi
 """

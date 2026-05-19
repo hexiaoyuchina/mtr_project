@@ -645,7 +645,7 @@
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0; margin-bottom: 12px">
-                  下列表为<strong>本机全部 VRF</strong> 的邻居（<span class="mono">bgp-agent</span>）。<strong>收/库</strong> 为会话收到 / 持久库条数；<strong>发送路由</strong> 为已向对端通告条数（会话 Established 后取 BGP 计数，开通告未建连时显示来源库条数）。三个开关：<strong>邻居启停</strong>（停 BGP 会话）、<strong>路由入库</strong>（把对端 IP 通告给本机的路由写入 Redis/RocksDB，RR/下游同一逻辑）、<strong>路由通告</strong>（以本行 TCP 源为出口，从持久库读出并通告给对端 IP）。查看明细请打开侧栏「BGP 路由」。
+                  下列表为<strong>本机全部 VRF</strong> 的邻居（<span class="mono">bgp-agent</span>）。<strong>收到</strong> 为会话计数（<span class="mono">pfx_rcd</span>）；持久库条数见侧栏「BGP 路由」上游/下游窗。三个开关：<strong>邻居启停</strong>（停 BGP 会话）、<strong>路由入库</strong>（把对端 IP 通告给本机的路由写入 Redis/RocksDB，RR/下游同一逻辑）、<strong>路由通告</strong>（以本行 TCP 源为出口，从持久库读出并通告给对端 IP）。
                   <strong>RR</strong>：角色 RR，VRF 选 <span class="mono">gobgp-rr</span>（可添加多个上游 RR，如 153.204/205/206，本端 TCP 源统一为 153.200）。<strong>下游</strong>：先 ARP + 卫星 VRF，TCP 源为冒充 IP。网口：<span class="mono">docs/BGP_OP_NETWORK.md</span>。
                 </p>
                 <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end">
@@ -700,8 +700,7 @@
                       <th>TCP 源</th>
                       <th>角色</th>
                       <th>状态</th>
-                      <th>收/库</th>
-                      <th title="BGP 已向对端通告的前缀数；开通告且会话未计数时显示来源库条数">发送路由</th>
+                      <th title="BGP 会话从对端收到的前缀数（pfx_rcd）">收到</th>
                       <th>邻居启停</th>
                       <th>路由入库</th>
                       <th>路由通告</th>
@@ -1950,7 +1949,7 @@
           tbody.innerHTML = "";
           if (!Array.isArray(rows) || rows.length === 0) {
             tbody.innerHTML =
-              '<tr><td colspan="13" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
+              '<tr><td colspan="12" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
             return;
           }
           rows.forEach((r) => {
@@ -1958,8 +1957,6 @@
             const advEnabled = Number(r.advertise_routes ?? 0) === 1;
             const storeOn = Number(r.store_received_routes ?? 0) === 1;
             const routesRx = Number(r.routes_received ?? r.pfx_rcd ?? 0);
-            const routesCached = Number(r.routes_cached ?? 0);
-            const routesTx = Number(r.routes_sent ?? r.pfx_adv ?? 0);
             tr.innerHTML = `
             <td class="mono">${r.vrf}</td>
             <td class="mono">${r.local_as ?? "—"}</td>
@@ -1968,8 +1965,7 @@
             <td class="mono">${r.source_ip || "—"}</td>
             <td>${bgpRoleTag(r.role)}</td>
             <td>${bgpStateTag(r.session_state, r.enabled)}</td>
-            <td class="mono" title="会话收到 / 持久库条数">${routesRx} / ${routesCached}</td>
-            <td class="mono" title="已向对端通告的前缀数">${routesTx}</td>
+            <td class="mono" title="BGP 会话从对端收到的前缀数">${routesRx}</td>
             <td>
               <label class="bgp-sw" title="邻居启停：关闭/开启 BGP 会话（admin shutdown）">
                 <input type="checkbox" class="bgp-neighbor-en-sw" ${r.enabled ? "checked" : ""} />
@@ -2095,7 +2091,7 @@
         } catch (e) {
           const tbody = $("#bgpBody");
           if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="13" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="12" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
           }
           toast(`BGP 列表加载失败：${String(e.message || e).slice(0, 80)}`);
         }
@@ -2453,13 +2449,14 @@
             tr.querySelector('[data-act="del"]').addEventListener("click", async () => {
               if (!confirm(`删除条目 ${r.id}（${r.spoof_gateway_ip}）? 关联的卫星VRF和BGP邻居也会被删除！`)) return;
               try {
-                await apiFetch(`/api/arp-spoof/targets/${r.id}`, { method: "DELETE" });
-                toast("已删除");
+                const res = await apiFetch(`/api/arp-spoof/targets/${r.id}`, { method: "DELETE" });
+                const w = Array.isArray(res?.warnings) ? res.warnings.filter(Boolean) : [];
+                toast(w.length ? `已删除（清理提示：${w[0].slice(0, 80)}）` : "已删除");
                 await loadArpTargetsTable();
                 await loadArpSpoofSummary();
-                await refreshBGP();
-              } catch {
-                toast("删除失败");
+                await refreshBGP().catch(() => {});
+              } catch (e) {
+                toast(`删除失败：${String(e.message || e).slice(0, 120)}`);
               }
             });
             tbody.appendChild(tr);

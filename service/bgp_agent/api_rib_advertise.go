@@ -15,16 +15,23 @@ import (
 	"bgp_agent/pkg/tx"
 )
 
+type ribPeerSource struct {
+	Window     string `json:"window"`
+	VRF        string `json:"vrf"`
+	NeighborIP string `json:"neighbor_ip"`
+}
+
 type ribAdvertiseReq struct {
-	TaskID          string `json:"task_id"`
-	SrcWindow       string `json:"src_window"`
-	SrcVRF          string `json:"src_vrf"`
-	SrcNeighborIP   string `json:"src_neighbor_ip"`
-	Target          string `json:"target"` // tx | rr
-	TargetVRF       string `json:"target_vrf"`
-	TargetNeighbor  string `json:"target_neighbor_ip"`
-	Enable          bool   `json:"enable"`
-	BatchSize       int    `json:"batch_size"`
+	TaskID         string          `json:"task_id"`
+	SrcWindow      string          `json:"src_window"`
+	SrcVRF         string          `json:"src_vrf"`
+	SrcNeighborIP  string          `json:"src_neighbor_ip"`
+	SrcPeers       []ribPeerSource `json:"src_peers,omitempty"`
+	Target         string          `json:"target"` // tx | rr
+	TargetVRF      string          `json:"target_vrf"`
+	TargetNeighbor string          `json:"target_neighbor_ip"`
+	Enable         bool            `json:"enable"`
+	BatchSize      int             `json:"batch_size"`
 }
 
 type ribAdvertiseJob struct {
@@ -100,13 +107,6 @@ func (s *APIServer) startRibAdvertiseJob(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "task_id required", http.StatusBadRequest)
 		return
 	}
-	srcWindow := strings.TrimSpace(req.SrcWindow)
-	srcVRF := strings.TrimSpace(req.SrcVRF)
-	srcNIP := strings.TrimSpace(req.SrcNeighborIP)
-	if srcWindow == "" || srcVRF == "" || srcNIP == "" {
-		http.Error(w, "src_window, src_vrf, src_neighbor_ip required", http.StatusBadRequest)
-		return
-	}
 	target := strings.ToLower(strings.TrimSpace(req.Target))
 	if target == "" {
 		target = "tx"
@@ -118,6 +118,28 @@ func (s *APIServer) startRibAdvertiseJob(w http.ResponseWriter, r *http.Request,
 	targetVRF := strings.TrimSpace(req.TargetVRF)
 	if target == "tx" && targetVRF == "" {
 		http.Error(w, "target_vrf required for tx", http.StatusBadRequest)
+		return
+	}
+
+	srcWindow := strings.TrimSpace(req.SrcWindow)
+	srcVRF := strings.TrimSpace(req.SrcVRF)
+	srcNIP := strings.TrimSpace(req.SrcNeighborIP)
+	aggregateRR := target == "rr" && len(req.SrcPeers) > 0
+	if aggregateRR {
+		for i := range req.SrcPeers {
+			req.SrcPeers[i].Window = strings.TrimSpace(req.SrcPeers[i].Window)
+			req.SrcPeers[i].VRF = strings.TrimSpace(req.SrcPeers[i].VRF)
+			req.SrcPeers[i].NeighborIP = strings.TrimSpace(req.SrcPeers[i].NeighborIP)
+			if req.SrcPeers[i].Window == "" {
+				req.SrcPeers[i].Window = "downstream"
+			}
+			if req.SrcPeers[i].VRF == "" || req.SrcPeers[i].NeighborIP == "" {
+				http.Error(w, "each src_peers item needs vrf and neighbor_ip", http.StatusBadRequest)
+				return
+			}
+		}
+	} else if srcWindow == "" || srcVRF == "" || srcNIP == "" {
+		http.Error(w, "src_window, src_vrf, src_neighbor_ip required", http.StatusBadRequest)
 		return
 	}
 	batchSize := req.BatchSize
@@ -142,7 +164,13 @@ func (s *APIServer) startRibAdvertiseJob(w http.ResponseWriter, r *http.Request,
 	s.ribJobs[taskID] = job
 	s.ribJobsMu.Unlock()
 
-	go s.runRibAdvertiseJob(context.Background(), job, srcWindow, srcVRF, srcNIP, target, targetVRF, req.Enable, batchSize)
+	if aggregateRR {
+		peers := make([]ribPeerSource, len(req.SrcPeers))
+		copy(peers, req.SrcPeers)
+		go s.runRibAdvertiseJobRRAggregate(context.Background(), job, peers, req.Enable, batchSize)
+	} else {
+		go s.runRibAdvertiseJob(context.Background(), job, srcWindow, srcVRF, srcNIP, target, targetVRF, req.Enable, batchSize)
+	}
 
 	s.writeJSON(w, map[string]interface{}{
 		"ok":      true,
@@ -191,6 +219,94 @@ func (j *ribAdvertiseJob) finish(status string, msg string) {
 	if status == "completed" {
 		j.Progress = 100
 	}
+}
+
+func (s *APIServer) runRibAdvertiseJobRRAggregate(
+	ctx context.Context,
+	job *ribAdvertiseJob,
+	peers []ribPeerSource,
+	enable bool,
+	batchSize int,
+) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("rib rr aggregate job panic: %v", rec)
+			job.finish("error", fmt.Sprintf("panic: %v", rec))
+		}
+	}()
+
+	var total int64
+	for _, p := range peers {
+		n, err := s.storage.CountPeerRoutes(ctx, p.Window, p.VRF, p.NeighborIP)
+		if err != nil {
+			job.finish("error", err.Error())
+			return
+		}
+		total += n
+	}
+	if total == 0 {
+		job.finish("completed", "no downstream routes in peer rib for aggregate")
+		return
+	}
+
+	defaultNH := s.rxAgent.ConfigRouterID()
+	var processed, addedTotal, failedTotal int64
+	seen := make(map[string]struct{})
+	action := "advertise"
+	if !enable {
+		action = "withdraw"
+	}
+	job.setProgress(0, total, 0, 0, fmt.Sprintf("%s 0/%d (%d peers)", action, total, len(peers)))
+
+	applyBatch := func(rxOps []rx.RouteOp) error {
+		if len(rxOps) == 0 {
+			return nil
+		}
+		added, failed, _ := s.rxAgent.ApplyIPv4Batch(ctx, rxOps, enable, defaultNH)
+		processed += int64(len(rxOps))
+		addedTotal += int64(added)
+		failedTotal += int64(failed)
+		job.setProgress(processed, total, addedTotal, failedTotal,
+			fmt.Sprintf("%s %d/%d", action, processed, total))
+		return nil
+	}
+
+	for _, p := range peers {
+		err := s.storage.IteratePeerRoutes(p.Window, p.VRF, p.NeighborIP, batchSize, func(batch []storage.PeerRoute) error {
+			rxOps := make([]rx.RouteOp, 0, len(batch))
+			for _, rt := range batch {
+				pfx := strings.TrimSpace(rt.Prefix)
+				if pfx == "" {
+					continue
+				}
+				if enable {
+					if _, dup := seen[pfx]; dup {
+						continue
+					}
+					seen[pfx] = struct{}{}
+				}
+				rxOps = append(rxOps, rx.RouteOp{Prefix: pfx, Nexthop: rt.Nexthop})
+			}
+			return applyBatch(rxOps)
+		})
+		if err != nil {
+			job.finish("error", err.Error())
+			return
+		}
+	}
+
+	job.finish("completed", fmt.Sprintf("done rr aggregate %s peers=%d added=%d failed=%d total_est=%d unique_adv=%d",
+		action, len(peers), addedTotal, failedTotal, total, len(seen)))
+	log.Printf("rib job %s rr-aggregate peers=%d added=%d failed=%d total_est=%d",
+		job.TaskID, len(peers), addedTotal, failedTotal, total)
+
+	time.AfterFunc(30*time.Minute, func() {
+		s.ribJobsMu.Lock()
+		if cur, ok := s.ribJobs[job.TaskID]; ok && cur == job && cur.Status != "running" {
+			delete(s.ribJobs, job.TaskID)
+		}
+		s.ribJobsMu.Unlock()
+	})
 }
 
 func (s *APIServer) runRibAdvertiseJob(

@@ -106,11 +106,13 @@ def distinct_ifaces(targets: List[Dict[str, Any]]) -> List[str]:
 
 
 _ROOT = Path(__file__).resolve().parent
-_SERVICE = _ROOT / "service" if (_ROOT / "service").is_dir() else (_ROOT.parent / "service")
-if _SERVICE.is_dir():
-    _sp = str(_SERVICE.resolve())
-    if _sp not in sys.path:
-        sys.path.insert(0, _sp)
+# 开发树：scripts/ 旁 service/；Linux 200 部署：/root/mtr_op/{app,scripts}/
+for _cand in (_ROOT.parent, _ROOT / "service", _ROOT.parent / "service"):
+    if (_cand / "app").is_dir():
+        _sp = str(_cand.resolve())
+        if _sp not in sys.path:
+            sys.path.insert(0, _sp)
+        break
 
 from app.arp_spoof_assign import reconcile_assigned_host_ips  # noqa: E402
 
