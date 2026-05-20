@@ -122,6 +122,8 @@ Web：`http://101.89.68.109:8808/`
 
 顺序见 [`docs/BGP_OP_NETWORK.md`](../docs/BGP_OP_NETWORK.md)。
 
+下联 MTR 对称转发（2110/2111、105.94 邻居）见 [`docs/MTR_DOWNSTREAM_TRANSIT_109.md`](../docs/MTR_DOWNSTREAM_TRANSIT_109.md)；部署后执行 `python 109/apply_downstream_transit.py`（**不**随 `deploy_fresh` 自动执行）。
+
 ### 5. 验收
 
 ```bash

@@ -3,13 +3,15 @@
 现网 109：下联进、上联出；回程对称：上联进 table 2111、下联出（不经管理口 default）。
 
 - 去程 table 2110：iif 下联 lookup → default via RR 从上联出
-- 回程 table 2111：105.92/30 dev 下联（勿 via 208）；pref 31/29 指引上联回程
+- 回程 table 2111：105.92/30 dev 下联（勿 via 208）；pref 29 to 客户端段 lookup 2111
 - 客户端源 IP（如 105.94）静态邻居：MAC 取下联 peer(208) 的 lladdr，避免 ARP INCOMPLETE
 
 用法：
   python 109/apply_downstream_transit.py
   python 109/apply_downstream_transit.py --check
   python 109/apply_downstream_transit.py --teardown
+
+文档：docs/MTR_DOWNSTREAM_TRANSIT_109.md
 """
 from __future__ import annotations
 
@@ -57,7 +59,6 @@ def remote_script(mode: str) -> str:
     ret_table = os.environ.get("MTR_DOWNSTREAM_RETURN_TABLE", "2111")
     ret_prefix = os.environ.get("MTR_DOWNSTREAM_RETURN_PREFIX", "139.159.105.92/30")
     pref = os.environ.get("MTR_DOWNSTREAM_TRANSIT_RULE_PREF", "30")
-    ret_pref = os.environ.get("MTR_DOWNSTREAM_RETURN_RULE_PREF", "31")
     to_client_pref = os.environ.get("MTR_DOWNSTREAM_TO_CLIENT_RULE_PREF", "29")
     persist = os.environ.get(
         "MTR_DOWNSTREAM_TRANSIT_PERSIST",
@@ -78,19 +79,18 @@ FWD_TABLE={fwd_table!r}
 RET_TABLE={ret_table!r}
 RET_PREFIX={ret_prefix!r}
 PREF={pref!r}
-RET_PREF={ret_pref!r}
 TO_CLIENT_PREF={to_client_pref!r}
 PERSIST={persist!r}
 DOWN_ADDR={down_addr!r}
 NEIGH_HOSTS={neigh_hosts!r}
 
 teardown_return() {{
-  while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
   while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
   for h in $NEIGH_HOSTS; do
-    while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
     while ip -4 rule del pref "$TO_CLIENT_PREF" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
-    while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$h/32" lookup "$FWD_TABLE" 2>/dev/null; do :; done
+    while ip -4 rule del pref 31 iif "$UP" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
+    while ip -4 rule del pref 31 iif "$UP" to "$h/32" lookup "$FWD_TABLE" 2>/dev/null; do :; done
     while ip -4 rule del pref "$TO_CLIENT_PREF" to "$h/32" lookup "$FWD_TABLE" 2>/dev/null; do :; done
     ip route del "$h/32" dev "$DOWN" table main 2>/dev/null || true
     ip neigh del "$h" dev "$DOWN" 2>/dev/null || true
@@ -147,9 +147,8 @@ apply_forward_rule() {{
 }}
 
 apply_return_rules() {{
-  while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
   while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
-  ip -4 rule add pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE"
   ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
 }}
 
@@ -176,8 +175,8 @@ verify() {{
   ip route show table "$FWD_TABLE"
   echo "=== table $RET_TABLE (return) ==="
   ip route show table "$RET_TABLE"
-  echo "=== rules 29/30/31 ==="
-  ip -4 rule list | grep -E '^29:|^30:|^31:' || true
+  echo "=== rules 29/30 (return/forward) ==="
+  ip -4 rule list | grep -E '^29:|^30:' || true
   echo "=== forward 105.94 iif $DOWN ==="
   ip route get 8.8.8.8 from 139.159.105.94 iif "$DOWN" 2>&1 | head -2
   echo "=== return 105.94 iif $UP ==="
@@ -200,7 +199,6 @@ FWD_TABLE=__FWD_TABLE__
 RET_TABLE=__RET_TABLE__
 RET_PREFIX=__RET_PREFIX__
 PREF=__PREF__
-RET_PREF=__RET_PREF__
 TO_CLIENT_PREF=__TO_CLIENT_PREF__
 DOWN_ADDR=__DOWN_ADDR__
 NEIGH_HOSTS=__NEIGH_HOSTS__
@@ -218,9 +216,8 @@ ip route replace "$PEER/32" dev "$DOWN" scope link
 ip -4 rule del pref "$PREF" 2>/dev/null || true
 while ip -4 rule del from "$PEER/32" iif "$DOWN" 2>/dev/null; do :; done
 ip -4 rule add pref "$PREF" iif "$DOWN" lookup "$FWD_TABLE"
-while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
 while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
-ip -4 rule add pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE"
 ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
 MAC=$(ip neigh show dev "$DOWN" 2>/dev/null | awk -v p="$PEER" '$1 == p {{print $3; exit}}')
 if [ -n "$MAC" ] && [ "$MAC" != "FAILED" ] && [ "$MAC" != "INCOMPLETE" ]; then
@@ -229,7 +226,7 @@ if [ -n "$MAC" ] && [ "$MAC" != "FAILED" ] && [ "$MAC" != "INCOMPLETE" ]; then
   done
 fi
 EOS
-  sed -i "s|__DOWN__|$DOWN|g; s|__UP__|$UP|g; s|__PEER__|$PEER|g; s|__RR__|$RR|g; s|__SRC__|$SRC|g; s|__FWD_TABLE__|$fwd_table|g; s|__RET_TABLE__|$ret_table|g; s|__RET_PREFIX__|$ret_prefix|g; s|__PREF__|$pref|g; s|__RET_PREF__|$ret_pref|g; s|__TO_CLIENT_PREF__|$to_client_pref|g; s|__DOWN_ADDR__|$down_addr|g; s|__NEIGH_HOSTS__|$neigh_hosts|g" "$PERSIST"
+  sed -i "s|__DOWN__|$DOWN|g; s|__UP__|$UP|g; s|__PEER__|$PEER|g; s|__RR__|$RR|g; s|__SRC__|$SRC|g; s|__FWD_TABLE__|$fwd_table|g; s|__RET_TABLE__|$ret_table|g; s|__RET_PREFIX__|$ret_prefix|g; s|__PREF__|$pref|g; s|__TO_CLIENT_PREF__|$to_client_pref|g; s|__DOWN_ADDR__|$down_addr|g; s|__NEIGH_HOSTS__|$neigh_hosts|g" "$PERSIST"
   chmod +x "$PERSIST"
   echo "persist -> $PERSIST"
 }}

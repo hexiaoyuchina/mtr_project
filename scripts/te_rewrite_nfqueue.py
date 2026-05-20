@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Linux 200：仅改写经转发的 ICMP Time Exceeded 外层 IPv4 源地址（不合成 Echo）。
-配合 iptables mangle FORWARD（-o/-i ens192 等）及 nat SNAT/DNAT（回程经 200，见 te_rewrite_sync.ensure_probe_return_via_200）。
+配合 iptables mangle FORWARD/OUTPUT（-o/-i ens192 等；OUTPUT 覆盖本机生成的 TE）及 nat SNAT/DNAT（回程经 200，见 te_rewrite_sync.ensure_probe_return_via_200）。
 
 规则来源：逗号分隔环境变量 MTR_TE_REWRITE_MAP="旧IP=新IP,旧2=新2"
 未设置或为空：不写任何替换，仅 NFQUEUE 直通（避免队列无监听丢包）。

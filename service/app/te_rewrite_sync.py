@@ -53,11 +53,34 @@ def _uplink_iface() -> str:
     return _LEGACY_UPLINK_IFACE
 
 
+def _te_rewrite_output_enabled() -> bool:
+    """本机生成的 ICMP TE 走 OUTPUT；默认开启（MTR_TE_REWRITE_OUTPUT=0 可关）。"""
+    return os.environ.get("MTR_TE_REWRITE_OUTPUT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _nfqueue_oif_specs_for_removal() -> list[list[str]]:
+    """按出接口列举 -o 匹配（FORWARD/OUTPUT 删除残留共用）。"""
+    oifs: list[str] = []
+    for v in (_downstream_iface(), _uplink_iface(), _LEGACY_DOWNSTREAM_IFACE, _LEGACY_UPLINK_IFACE):
+        if v and v not in oifs:
+            oifs.append(v)
+    return [["-o", o] for o in oifs]
+
+
 def _nfqueue_forward_specs_active() -> list[list[str]]:
     """当前应安装的 FORWARD NFQUEUE 匹配（下联出 + 上联入下联出）。"""
     oif = _downstream_iface()
     iif = _uplink_iface()
     return [["-o", oif], ["-i", iif, "-o", oif]]
+
+
+def _nfqueue_output_specs_active() -> list[list[str]]:
+    """本机发出的 TE（如 105.94→公网 第 1 跳 209）：OUTPUT -o 下联/上联。"""
+    return _nfqueue_oif_specs_for_removal()
 
 
 def _nfqueue_forward_specs_all_for_removal() -> list[list[str]]:
@@ -145,17 +168,18 @@ def _iptables_del_rule(argv: list[str]) -> None:
 
 
 def clear_iptables_nfqueue() -> None:
-    """移除 FORWARD NFQUEUE，避免无守护进程时丢包。"""
-    _iptables_nfqueue_remove_specs(_nfqueue_forward_specs_all_for_removal())
+    """移除 FORWARD/OUTPUT NFQUEUE，避免无守护进程时丢包。"""
+    _iptables_nfqueue_remove_chain("FORWARD", _nfqueue_forward_specs_all_for_removal())
+    _iptables_nfqueue_remove_chain("OUTPUT", _nfqueue_oif_specs_for_removal())
 
 
-def _iptables_nfqueue_remove_specs(specs: list[list[str]]) -> None:
+def _iptables_nfqueue_remove_chain(chain: str, specs: list[list[str]]) -> None:
     base_rm = [
         "iptables",
         "-t",
         "mangle",
         "-D",
-        "FORWARD",
+        chain,
         "-p",
         "icmp",
         "-m",
@@ -164,7 +188,6 @@ def _iptables_nfqueue_remove_specs(specs: list[list[str]]) -> None:
         "time-exceeded",
     ]
     for spec in specs:
-        # 重复 -D 直到删净（历史上可能多次插入）
         for _ in range(8):
             r = subprocess.run(
                 base_rm + spec + ["-j", "NFQUEUE", "--queue-num", TE_QUEUE_NUM],
@@ -175,17 +198,14 @@ def _iptables_nfqueue_remove_specs(specs: list[list[str]]) -> None:
                 break
 
 
-def ensure_iptables_nfqueue() -> None:
-    """mangle FORWARD：转发的 ICMP TE（上联→下联回程等）进 NFQUEUE。"""
-    _iptables_nfqueue_remove_specs(_nfqueue_forward_specs_all_for_removal())
-    specs = _nfqueue_forward_specs_active()
+def _iptables_nfqueue_install_chain(chain: str, specs: list[list[str]]) -> None:
     for spec in reversed(specs):
         ins = [
             "iptables",
             "-t",
             "mangle",
             "-I",
-            "FORWARD",
+            chain,
             "1",
             "-p",
             "icmp",
@@ -202,14 +222,25 @@ def ensure_iptables_nfqueue() -> None:
         r = subprocess.run(ins, capture_output=True, text=True)
         if r.returncode != 0:
             logger.warning(
-                "iptables mangle NFQUEUE %s: %s",
+                "iptables mangle %s NFQUEUE %s: %s",
+                chain,
                 " ".join(spec),
                 (r.stderr or r.stdout or "").strip(),
             )
+
+
+def ensure_iptables_nfqueue() -> None:
+    """mangle FORWARD/OUTPUT：转发与本机发出的 ICMP TE 进 NFQUEUE。"""
+    _iptables_nfqueue_remove_chain("FORWARD", _nfqueue_forward_specs_all_for_removal())
+    _iptables_nfqueue_remove_chain("OUTPUT", _nfqueue_oif_specs_for_removal())
+    _iptables_nfqueue_install_chain("FORWARD", _nfqueue_forward_specs_active())
+    if _te_rewrite_output_enabled():
+        _iptables_nfqueue_install_chain("OUTPUT", _nfqueue_output_specs_active())
     logger.info(
-        "iptables mangle NFQUEUE: oif=%s iif=%s queue=%s",
+        "iptables mangle NFQUEUE: forward oif=%s iif=%s output=%s queue=%s",
         _downstream_iface(),
         _uplink_iface(),
+        _te_rewrite_output_enabled(),
         TE_QUEUE_NUM,
     )
 
@@ -389,7 +420,8 @@ def sync_te_rewrite_from_conn(conn: sqlite3.Connection) -> None:
     if os.environ.get("MTR_TE_REWRITE_SKIP_SYNC", "").strip().lower() in {"1", "true", "yes"}:
         return
     # 每次同步先清实验室旧口残留（即使 hijack 关闭也执行）
-    _iptables_nfqueue_remove_specs(_nfqueue_forward_specs_all_for_removal())
+    _iptables_nfqueue_remove_chain("FORWARD", _nfqueue_forward_specs_all_for_removal())
+    _iptables_nfqueue_remove_chain("OUTPUT", _nfqueue_oif_specs_for_removal())
     script = _script_path()
     if not script.is_file():
         logger.debug("te_rewrite_sync: skip (no script %s)", script)
