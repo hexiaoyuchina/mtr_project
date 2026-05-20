@@ -66,7 +66,11 @@ func (s *APIServer) handleRRRoutes(w http.ResponseWriter, r *http.Request) {
 		if pfx == "" {
 			continue
 		}
-		ops = append(ops, rx.RouteOp{Prefix: pfx, Nexthop: strings.TrimSpace(item.Nexthop)})
+		nh := strings.TrimSpace(item.Nexthop)
+		if req.Enable {
+			nh = defaultNH
+		}
+		ops = append(ops, rx.RouteOp{Prefix: pfx, Nexthop: nh})
 	}
 	added, failed, errs := s.rxAgent.ApplyIPv4Batch(ctx, ops, req.Enable, defaultNH)
 	s.writeJSON(w, map[string]interface{}{

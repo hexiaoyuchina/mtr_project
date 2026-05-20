@@ -285,7 +285,7 @@ func (s *APIServer) runRibAdvertiseJobRRAggregate(
 					}
 					seen[pfx] = struct{}{}
 				}
-				rxOps = append(rxOps, rx.RouteOp{Prefix: pfx, Nexthop: rt.Nexthop})
+				rxOps = append(rxOps, rx.RouteOp{Prefix: pfx, Nexthop: defaultNH})
 			}
 			return applyBatch(rxOps)
 		})
@@ -352,7 +352,11 @@ func (s *APIServer) runRibAdvertiseJob(
 				continue
 			}
 			ops = append(ops, tx.RouteOp{Prefix: rt.Prefix, Nexthop: rt.Nexthop})
-			rxOps = append(rxOps, rx.RouteOp{Prefix: rt.Prefix, Nexthop: rt.Nexthop})
+			nh := rt.Nexthop
+			if target == "rr" {
+				nh = defaultNH
+			}
+			rxOps = append(rxOps, rx.RouteOp{Prefix: rt.Prefix, Nexthop: nh})
 		}
 		var added, failed int
 		var errs []string

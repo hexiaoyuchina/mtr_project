@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-现网 109：下联（ARP 冒充网关进入）转发，从上联出；不在上联 add/del 地址。
+现网 109：下联进、上联出；回程对称：上联进 table 2111、下联出（不经管理口 default）。
 
-- table 2110（可环境变量 MTR_DOWNSTREAM_TRANSIT_TABLE）：208 回程 + default 经 RR(249) 从上联出去，src=ROUTER_ID(207)
-- ip rule：仅 from 下游 peer iif 下联口 lookup 2110（pref 30），不碰卫星 from 冒充IP 的 1000+ 规则
-- 主表 PEER/32 → 下联口：回程（外网→208 从上联进）须转发到 eno1np0，避免误走 43.0/24 上联直连
+- 去程 table 2110：iif 下联 lookup → default via RR 从上联出
+- 回程 table 2111：105.92/30 dev 下联（勿 via 208）；pref 31/29 指引上联回程
+- 客户端源 IP（如 105.94）静态邻居：MAC 取下联 peer(208) 的 lladdr，避免 ARP INCOMPLETE
 
-用法（仓库根或 109 目录）：
-  python 109/apply_downstream_transit.py          # 下发
+用法：
+  python 109/apply_downstream_transit.py
   python 109/apply_downstream_transit.py --check
   python 109/apply_downstream_transit.py --teardown
 """
@@ -41,19 +41,30 @@ def load_env() -> None:
         break
 
 
+def client_neigh_hosts() -> str:
+    """空格分隔，用于 bash 循环；默认 105.94。"""
+    raw = os.environ.get("MTR_DOWNSTREAM_CLIENT_NEIGH_HOSTS", "139.159.105.94")
+    return " ".join(h.strip() for h in raw.split(",") if h.strip())
+
+
 def remote_script(mode: str) -> str:
     down = os.environ.get("MTR_OP_DOWNSTREAM_IFACE", "eno1np0")
     up = os.environ.get("MTR_BGP_RR_UPLINK_IFACE", "enp59s0f0np0")
     peer = os.environ.get("MTR_BGP_IPVLAN_PEER_IP", "139.159.43.208")
     rr = os.environ.get("RR_ADDR", "139.159.43.249")
     src = os.environ.get("ROUTER_ID", "139.159.43.207")
-    table = os.environ.get("MTR_DOWNSTREAM_TRANSIT_TABLE", "2110")
+    fwd_table = os.environ.get("MTR_DOWNSTREAM_TRANSIT_TABLE", "2110")
+    ret_table = os.environ.get("MTR_DOWNSTREAM_RETURN_TABLE", "2111")
+    ret_prefix = os.environ.get("MTR_DOWNSTREAM_RETURN_PREFIX", "139.159.105.92/30")
     pref = os.environ.get("MTR_DOWNSTREAM_TRANSIT_RULE_PREF", "30")
+    ret_pref = os.environ.get("MTR_DOWNSTREAM_RETURN_RULE_PREF", "31")
+    to_client_pref = os.environ.get("MTR_DOWNSTREAM_TO_CLIENT_RULE_PREF", "29")
     persist = os.environ.get(
         "MTR_DOWNSTREAM_TRANSIT_PERSIST",
         "/usr/local/sbin/mtr-op-downstream-transit.sh",
     )
     down_addr = os.environ.get("MTR_DOWNSTREAM_ADDR", "139.159.43.209/24")
+    neigh_hosts = client_neigh_hosts()
 
     return f"""
 set -e
@@ -63,19 +74,39 @@ UP={up!r}
 PEER={peer!r}
 RR={rr!r}
 SRC={src!r}
-TABLE={table!r}
+FWD_TABLE={fwd_table!r}
+RET_TABLE={ret_table!r}
+RET_PREFIX={ret_prefix!r}
 PREF={pref!r}
+RET_PREF={ret_pref!r}
+TO_CLIENT_PREF={to_client_pref!r}
 PERSIST={persist!r}
 DOWN_ADDR={down_addr!r}
+NEIGH_HOSTS={neigh_hosts!r}
+
+teardown_return() {{
+  while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  for h in $NEIGH_HOSTS; do
+    while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
+    while ip -4 rule del pref "$TO_CLIENT_PREF" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
+    while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$h/32" lookup "$FWD_TABLE" 2>/dev/null; do :; done
+    while ip -4 rule del pref "$TO_CLIENT_PREF" to "$h/32" lookup "$FWD_TABLE" 2>/dev/null; do :; done
+    ip route del "$h/32" dev "$DOWN" table main 2>/dev/null || true
+    ip neigh del "$h" dev "$DOWN" 2>/dev/null || true
+  done
+  ip route flush table "$RET_TABLE" 2>/dev/null || true
+}}
 
 teardown() {{
   ip -4 rule del pref "$PREF" 2>/dev/null || true
-  ip route flush table "$TABLE" 2>/dev/null || true
+  teardown_return
+  ip route flush table "$FWD_TABLE" 2>/dev/null || true
   ip route del "$PEER/32" dev "$DOWN" 2>/dev/null || true
   if [ -n "$DOWN_ADDR" ]; then
     ip addr del "$DOWN_ADDR" dev "$DOWN" 2>/dev/null || true
   fi
-  echo "teardown table $TABLE pref $PREF main $PEER/32 done"
+  echo "teardown fwd=$FWD_TABLE ret=$RET_TABLE done"
 }}
 
 apply_downstream_addr() {{
@@ -86,68 +117,119 @@ apply_downstream_addr() {{
   ip addr add "$DOWN_ADDR" dev "$DOWN" 2>/dev/null || ip addr replace "$DOWN_ADDR" dev "$DOWN"
 }}
 
-apply_routes() {{
-  ip route replace table "$TABLE" "$PEER/32" dev "$DOWN" scope link
-  ip route replace table "$TABLE" 139.159.43.0/24 dev "$DOWN" scope link
-  ip route replace table "$TABLE" default via "$RR" dev "$UP" src "$SRC"
+apply_forward_routes() {{
+  ip route replace table "$FWD_TABLE" "$PEER/32" dev "$DOWN" scope link
+  ip route replace table "$FWD_TABLE" 139.159.43.0/24 dev "$DOWN" scope link
+  ip route replace table "$FWD_TABLE" default via "$RR" dev "$UP" src "$SRC"
+}}
+
+apply_return_routes() {{
+  ip route replace table "$RET_TABLE" "$RET_PREFIX" dev "$DOWN" scope link
+  ip route replace table "$RET_TABLE" "$PEER/32" dev "$DOWN" scope link
+}}
+
+scrub_main_return_conflict() {{
+  ip route del "$RET_PREFIX" dev "$DOWN" table main 2>/dev/null || true
+  for h in $NEIGH_HOSTS; do
+    ip route del "$h/32" dev "$DOWN" table main 2>/dev/null || true
+    ip route del "$h/32" dev "$DOWN" 2>/dev/null || true
+  done
 }}
 
 apply_main_return() {{
-  # 上联有 43.0/24 时，主表会把 208 判到 uplink；ICMP 回程必须走下联
   ip route replace "$PEER/32" dev "$DOWN" scope link
 }}
 
-apply_rule() {{
+apply_forward_rule() {{
   ip -4 rule del pref "$PREF" 2>/dev/null || true
-  ip -4 rule add pref "$PREF" from "$PEER/32" iif "$DOWN" lookup "$TABLE"
+  while ip -4 rule del from "$PEER/32" iif "$DOWN" 2>/dev/null; do :; done
+  ip -4 rule add pref "$PREF" iif "$DOWN" lookup "$FWD_TABLE"
+}}
+
+apply_return_rules() {{
+  while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  ip -4 rule add pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE"
+  ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
+}}
+
+apply_client_neigh() {{
+  MAC=$(ip neigh show dev "$DOWN" 2>/dev/null | awk -v p="$PEER" '$1 == p {{print $3; exit}}')
+  if [ -z "$MAC" ] || [ "$MAC" = "FAILED" ] || [ "$MAC" = "INCOMPLETE" ]; then
+    ping -c1 -W1 "$PEER" >/dev/null 2>&1 || true
+    MAC=$(ip neigh show dev "$DOWN" 2>/dev/null | awk -v p="$PEER" '$1 == p {{print $3; exit}}')
+  fi
+  if [ -z "$MAC" ] || [ "$MAC" = "FAILED" ] || [ "$MAC" = "INCOMPLETE" ]; then
+    echo "WARN: no lladdr for peer $PEER on $DOWN, skip client neigh"
+    return 0
+  fi
+  for h in $NEIGH_HOSTS; do
+    ip neigh replace "$h" lladdr "$MAC" dev "$DOWN" nud permanent
+    echo "neigh: $h -> $MAC dev $DOWN (permanent)"
+  done
 }}
 
 verify() {{
   echo "=== sysctl forward ==="
   sysctl -n net.ipv4.ip_forward
-  echo "=== table $TABLE ==="
-  ip route show table "$TABLE"
-  echo "=== rule pref $PREF ==="
-  ip -4 rule list | grep -E "^$PREF:" || true
-  echo "=== route get forward (peer -> internet) ==="
-  ip route get 8.8.8.8 from "$PEER" iif "$DOWN" 2>&1 | head -2
-  echo "=== route get return (internet -> peer, iif uplink) ==="
-  ip route get "$PEER" from 8.8.8.8 iif "$UP" 2>&1 | head -2
-  echo "=== main host route peer ==="
-  ip route show table main | grep "$PEER" || true
-  echo "=== route get spoof local (must NOT use table $TABLE) ==="
-  ip route get 8.8.8.8 from "$RR" 2>&1 | head -2
-  echo "=== downstream addr ==="
-  ip -br addr show dev "$DOWN"
-  echo "=== uplink addrs (no changes expected) ==="
-  ip -br addr show dev "$UP"
+  echo "=== table $FWD_TABLE (forward) ==="
+  ip route show table "$FWD_TABLE"
+  echo "=== table $RET_TABLE (return) ==="
+  ip route show table "$RET_TABLE"
+  echo "=== rules 29/30/31 ==="
+  ip -4 rule list | grep -E '^29:|^30:|^31:' || true
+  echo "=== forward 105.94 iif $DOWN ==="
+  ip route get 8.8.8.8 from 139.159.105.94 iif "$DOWN" 2>&1 | head -2
+  echo "=== return 105.94 iif $UP ==="
+  ip route get 139.159.105.94 from 8.8.8.8 iif "$UP" 2>&1 | head -2
+  echo "=== local to 105.94 ==="
+  ip route get 139.159.105.94 2>&1 | head -2
+  echo "=== neigh $DOWN (peer + client) ==="
+  ip neigh show dev "$DOWN" | grep -E '105\\.94|43\\.208' || true
 }}
 
 write_persist() {{
   cat > "$PERSIST" <<'EOS'
 #!/bin/bash
-# mtr-op downstream transit — re-apply after reboot (no ip addr on uplink)
 DOWN=__DOWN__
 UP=__UP__
 PEER=__PEER__
 RR=__RR__
 SRC=__SRC__
-TABLE=__TABLE__
+FWD_TABLE=__FWD_TABLE__
+RET_TABLE=__RET_TABLE__
+RET_PREFIX=__RET_PREFIX__
 PREF=__PREF__
+RET_PREF=__RET_PREF__
+TO_CLIENT_PREF=__TO_CLIENT_PREF__
 DOWN_ADDR=__DOWN_ADDR__
+NEIGH_HOSTS=__NEIGH_HOSTS__
 [ -d "/sys/class/net/$DOWN" ] || exit 0
 [ -d "/sys/class/net/$UP" ] || exit 0
 if [ -n "$DOWN_ADDR" ]; then
   ip addr show dev "$DOWN" | grep -q "${{DOWN_ADDR%%/*}}" || ip addr add "$DOWN_ADDR" dev "$DOWN" 2>/dev/null || ip addr replace "$DOWN_ADDR" dev "$DOWN"
 fi
-ip route replace table "$TABLE" "$PEER/32" dev "$DOWN" scope link
-ip route replace table "$TABLE" 139.159.43.0/24 dev "$DOWN" scope link
-ip route replace table "$TABLE" default via "$RR" dev "$UP" src "$SRC"
+ip route replace table "$FWD_TABLE" "$PEER/32" dev "$DOWN" scope link
+ip route replace table "$FWD_TABLE" 139.159.43.0/24 dev "$DOWN" scope link
+ip route replace table "$FWD_TABLE" default via "$RR" dev "$UP" src "$SRC"
+ip route replace table "$RET_TABLE" "$RET_PREFIX" dev "$DOWN" scope link
+ip route replace table "$RET_TABLE" "$PEER/32" dev "$DOWN" scope link
 ip route replace "$PEER/32" dev "$DOWN" scope link
 ip -4 rule del pref "$PREF" 2>/dev/null || true
-ip -4 rule add pref "$PREF" from "$PEER/32" iif "$DOWN" lookup "$TABLE"
+while ip -4 rule del from "$PEER/32" iif "$DOWN" 2>/dev/null; do :; done
+ip -4 rule add pref "$PREF" iif "$DOWN" lookup "$FWD_TABLE"
+while ip -4 rule del pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+ip -4 rule add pref "$RET_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE"
+ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
+MAC=$(ip neigh show dev "$DOWN" 2>/dev/null | awk -v p="$PEER" '$1 == p {{print $3; exit}}')
+if [ -n "$MAC" ] && [ "$MAC" != "FAILED" ] && [ "$MAC" != "INCOMPLETE" ]; then
+  for h in $NEIGH_HOSTS; do
+    ip neigh replace "$h" lladdr "$MAC" dev "$DOWN" nud permanent
+  done
+fi
 EOS
-  sed -i "s|__DOWN__|$DOWN|g; s|__UP__|$UP|g; s|__PEER__|$PEER|g; s|__RR__|$RR|g; s|__SRC__|$SRC|g; s|__TABLE__|$TABLE|g; s|__PREF__|$PREF|g; s|__DOWN_ADDR__|$DOWN_ADDR|g" "$PERSIST"
+  sed -i "s|__DOWN__|$DOWN|g; s|__UP__|$UP|g; s|__PEER__|$PEER|g; s|__RR__|$RR|g; s|__SRC__|$SRC|g; s|__FWD_TABLE__|$fwd_table|g; s|__RET_TABLE__|$ret_table|g; s|__RET_PREFIX__|$ret_prefix|g; s|__PREF__|$pref|g; s|__RET_PREF__|$ret_pref|g; s|__TO_CLIENT_PREF__|$to_client_pref|g; s|__DOWN_ADDR__|$down_addr|g; s|__NEIGH_HOSTS__|$neigh_hosts|g" "$PERSIST"
   chmod +x "$PERSIST"
   echo "persist -> $PERSIST"
 }}
@@ -156,10 +238,15 @@ case "$MODE" in
   teardown) teardown ;;
   check) verify ;;
   *)
+    teardown_return
     apply_downstream_addr
-    apply_routes
+    apply_forward_routes
+    apply_return_routes
+    scrub_main_return_conflict
     apply_main_return
-    apply_rule
+    apply_forward_rule
+    apply_return_rules
+    apply_client_neigh
     write_persist
     verify
     ;;
@@ -202,8 +289,6 @@ def main() -> int:
     print(out)
     if err.strip():
         print(err, file=sys.stderr)
-    if mode == "check" and "8.8.8.8 from" in out and f"dev {os.environ.get('MTR_BGP_RR_UPLINK_IFACE', 'enp59s0f0np0')}" in out:
-        return 0
     if mode == "apply" and "No route to host" in out:
         return 1
     return 0
