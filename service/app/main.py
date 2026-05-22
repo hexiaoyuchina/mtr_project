@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
+import ipaddress
 import logging
 import os
 import sqlite3
@@ -27,6 +28,7 @@ from . import (
     kernel_vrf,
     nft_sync,
     satellite_vrf_assign,
+    static_route_sync,
     storage,
     te_rewrite_sync,
     vpn_egress,
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("MTR_OP_DB", str(ROOT / "data.db")))
-NFT_FILE = Path(os.environ.get("MTR_OP_NFT", str(ROOT / "nft_mtr_spoof.nft")))
+NFT_FILE = Path(os.environ.get("MTR_OP_NFT", str(ROOT / "nft_mtr_te.nft")))
 DATA_DIR = Path(os.environ.get("MTR_OP_DATA", str(ROOT / "data")))
 
 _BG_RIB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="op_bgp_rib")
@@ -72,25 +74,45 @@ def _sync_nft_from_conn(conn: sqlite3.Connection) -> None:
     )
 
 
-def _apply_nft(conn: sqlite3.Connection, *, hijack_enabled: bool | None = None) -> None:
+def _apply_nft(
+    conn: sqlite3.Connection,
+    *,
+    hijack_enabled: bool | None = None,
+    full_table_reload: bool = False,
+) -> None:
     if os.environ.get("MTR_OP_SKIP_NFT_SYNC", "").strip().lower() in {"1", "true", "yes"}:
         logger.warning("MTR_OP_SKIP_NFT_SYNC is set: skipping nft sync after global/hop changes")
         return
     try:
         enabled = hijack_enabled if hijack_enabled is not None else storage.get_global(conn).hijack_enabled
-        nft_sync.sync_nft(
-            nft_file=NFT_FILE,
-            hijack_enabled=enabled,
-            hop_rules=storage.list_hop_rules_enabled(conn),
-        )
+        rules = storage.list_hop_rules_enabled(conn)
+        if full_table_reload:
+            nft_sync.sync_nft(
+                nft_file=NFT_FILE,
+                hijack_enabled=enabled,
+                hop_rules=rules,
+            )
+        else:
+            nft_sync.sync_te_snat_only(
+                nft_file=NFT_FILE,
+                hijack_enabled=enabled,
+                hop_rules=rules,
+            )
     except Exception as e:
         logger.exception("nft sync failed")
         raise HTTPException(status_code=500, detail=f"nft_sync_failed: {e}") from e
 
 
-def _sync_te_rewrite_best_effort(conn: sqlite3.Connection) -> None:
+def _sync_te_rewrite_best_effort(
+    conn: sqlite3.Connection,
+    *,
+    flush_iptables_legacy: bool = False,
+) -> None:
     try:
-        te_rewrite_sync.sync_te_rewrite_from_conn(conn)
+        te_rewrite_sync.sync_te_rewrite_from_conn(
+            conn,
+            flush_iptables_legacy=flush_iptables_legacy,
+        )
     except Exception:
         logger.exception("te_rewrite sync failed")
 
@@ -154,7 +176,10 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("startup nft sync failed (fix CAP_NET_ADMIN / nft path)")
         try:
-            te_rewrite_sync.sync_te_rewrite_from_conn(conn)
+            te_rewrite_sync.sync_te_rewrite_from_conn(
+                conn,
+                flush_iptables_legacy=True,
+            )
         except Exception:
             logger.exception("startup te_rewrite sync failed")
         try:
@@ -607,6 +632,99 @@ class ArpTargetOut(BaseModel):
     created_at: str
 
 
+class StaticRouteIn(BaseModel):
+    enabled: bool = True
+    note: str = ""
+    dst_cidr: str
+    gateway_ip: str = ""
+    egress_iface: str = ""
+    pref_src: str = ""
+    install_scope: str = "main"
+    routing_mark: str = ""
+    table_id: int = 0
+    metric: int = 0
+    cross_vrf: bool = False
+    nexthop_scope: str = ""
+    nexthop_mark: str = ""
+
+
+class StaticRoutePatch(BaseModel):
+    enabled: Optional[bool] = None
+    note: Optional[str] = None
+    dst_cidr: Optional[str] = None
+    gateway_ip: Optional[str] = None
+    egress_iface: Optional[str] = None
+    pref_src: Optional[str] = None
+    install_scope: Optional[str] = None
+    routing_mark: Optional[str] = None
+    table_id: Optional[int] = None
+    metric: Optional[int] = None
+    cross_vrf: Optional[bool] = None
+    nexthop_scope: Optional[str] = None
+    nexthop_mark: Optional[str] = None
+
+
+class StaticRouteOut(BaseModel):
+    id: int
+    enabled: bool
+    note: str
+    dst_cidr: str
+    gateway_ip: str
+    egress_iface: str
+    pref_src: str
+    install_scope: str
+    routing_mark: str
+    table_id: int
+    metric: int
+    cross_vrf: bool
+    nexthop_scope: str
+    nexthop_mark: str
+    created_at: str
+    updated_at: str
+    sync_state: str = "unknown"
+    kernel_line: Optional[str] = None
+    preview_cmds: List[str] = Field(default_factory=list)
+
+
+class StaticRouteApplyItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: int
+    ok: bool
+    skipped: Optional[bool] = None
+    reason: Optional[str] = None
+    rc: Optional[int] = None
+    argv: Optional[List[str]] = None
+    output: Optional[str] = None
+
+
+class StaticRouteApplyOut(BaseModel):
+    ok: bool
+    applied: int
+    withdrawn: int = 0
+    total: int
+    results: List[StaticRouteApplyItem] = Field(default_factory=list)
+
+
+class StaticRouteProbeItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: int
+    ok: bool
+    rc: Optional[int] = None
+    argv: Optional[List[str]] = None
+    output: Optional[str] = None
+
+
+class StaticRouteProbeOut(BaseModel):
+    results: List[StaticRouteProbeItem] = Field(default_factory=list)
+
+
+class StaticRouteIdsBody(BaseModel):
+    ids: Optional[List[int]] = None
+    probe_dst: Optional[str] = None
+
+
 class BgpVrfOut(BaseModel):
     vrf: str
     local_as: int
@@ -872,7 +990,8 @@ def _vpn_policy_out(row: dict) -> VpnPolicyOut:
 def _seed_bgp_neighbors_from_frr(conn: sqlite3.Connection) -> List[str]:
     """将 GoBGP Agent 已有邻居写入 SQLite，再套用预设角色。"""
     try:
-        for row in bgp_control.list_agent_neighbors():
+        seed_timeout = float(os.environ.get("MTR_BGP_STARTUP_SEED_TIMEOUT", "8"))
+        for row in bgp_control.list_agent_neighbors(timeout=seed_timeout):
             vrf = storage.validate_vrf_name(str(row.get("vrf") or "default"))
             ip = storage.validate_ipv4(str(row.get("address") or ""))
             role = str(row.get("role") or "unknown")
@@ -1042,6 +1161,92 @@ def _iter_rr_meta_rows(conn: sqlite3.Connection):
         )
 
 
+def _meta_row_remote_as(role: str) -> int:
+    if bgp_control.is_downstream_role(role):
+        try:
+            v = int(os.environ.get("MTR_DOWNSTREAM_REMOTE_AS", "0"))
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return bgp_control.default_local_as()
+
+
+def _find_agent_row_in_list(
+    agent_rows: List[Dict[str, Any]],
+    conn: sqlite3.Connection,
+    vrf_norm: str,
+    neighbor_ip: str,
+) -> Optional[Dict[str, Any]]:
+    """在已拉取的 Agent 邻居表中按 vrf+ip 匹配，避免重复 HTTP。"""
+    nip = str(neighbor_ip).strip()
+    role, _ = _resolve_bgp_role(conn, vrf_norm, nip)
+    if bgp_control.is_rr_role(role) or vrf_norm == bgp_control.GOBGP_VRF_RR:
+        for row in agent_rows:
+            if str(row.get("session") or "").lower() != "rx":
+                continue
+            if str(row.get("address") or "").strip() == nip:
+                return row
+        return None
+    for row in agent_rows:
+        if str(row.get("address") or "").strip() != nip:
+            continue
+        if str(row.get("session") or "").lower() == "rx":
+            continue
+        if storage.validate_vrf_name(str(row.get("vrf") or "default")) == vrf_norm:
+            return row
+    return None
+
+
+def _append_meta_neighbors_not_in_list(
+    conn: sqlite3.Connection,
+    out: List[BgpNeighborOut],
+    agent_rows: List[Dict[str, Any]],
+    q_vrf: Optional[str],
+    *,
+    fast_list: bool,
+) -> None:
+    """SQLite meta 中有、当前列表尚无的邻居（常见于 Agent 未 reconcile 的下游）。"""
+    listed = {(o.vrf, o.neighbor_ip) for o in out}
+    seen_rr: set[str] = {o.neighbor_ip for o in out if bgp_control.is_rr_role(o.role)}
+    for row in conn.execute(
+        "SELECT vrf, neighbor_ip, role, source_ip FROM bgp_neighbor_meta ORDER BY vrf, neighbor_ip"
+    ):
+        v = storage.validate_vrf_name(str(row["vrf"] or "default"))
+        nip = storage.validate_ipv4(str(row["neighbor_ip"]))
+        role = str(row["role"] or "unknown")
+        src = str(row["source_ip"] or "")
+        if q_vrf and v != storage.validate_vrf_name(q_vrf):
+            continue
+        if bgp_control.is_rr_role(role):
+            if nip in seen_rr:
+                continue
+            seen_rr.add(nip)
+        if (v, nip) in listed:
+            continue
+        agent_row = _find_agent_row_in_list(agent_rows, conn, v, nip)
+        if agent_row:
+            out.append(_neighbor_out_from_agent(conn, agent_row, fast_list=fast_list))
+        else:
+            out.append(
+                _neighbor_out_from_agent(
+                    conn,
+                    {
+                        "vrf": v,
+                        "address": nip,
+                        "remote_as": _meta_row_remote_as(role),
+                        "state": "IDLE",
+                        "enabled": True,
+                        "pfx_rcd": 0,
+                        "pfx_adv": 0,
+                        "local_address": src,
+                    },
+                    fast_list=fast_list,
+                )
+            )
+        listed.add((v, nip))
+
+
 def _agent_neighbor_row(
     conn: sqlite3.Connection, vrf_norm: str, neighbor_ip: str
 ) -> Optional[Dict[str, Any]]:
@@ -1125,6 +1330,32 @@ def _resolve_routes_sent(
         return 0
 
 
+def _neighbor_out_fast(
+    conn: sqlite3.Connection,
+    *,
+    vrf: str,
+    neighbor_ip: str,
+    remote_as: int,
+    source_ip: str = "",
+    state: str = "",
+) -> BgpNeighborOut:
+    """写操作 API 快速返回：不做 Agent 全量邻居拉取与 RIB 计数（由列表刷新补全）。"""
+    return _neighbor_out_from_agent(
+        conn,
+        {
+            "vrf": vrf,
+            "address": neighbor_ip,
+            "remote_as": remote_as,
+            "local_address": source_ip,
+            "state": state,
+            "enabled": True,
+            "pfx_rcd": 0,
+            "pfx_adv": 0,
+        },
+        fast_list=True,
+    )
+
+
 def _neighbor_out_from_agent(
     conn: sqlite3.Connection,
     row: Dict[str, Any],
@@ -1188,26 +1419,19 @@ def _bgp_add_neighbor_impl(conn: sqlite3.Connection, body: BgpNeighborIn) -> Bgp
             raise HTTPException(status_code=503, detail=f"gobgp_rr_failed: {e}") from e
         storage.set_bgp_neighbor_meta(conn, vrf_use, ip, role, "", update_source=sip)
         storage.update_bgp_neighbor_advertise_routes(conn, vrf_use, ip, 0, "")
-        for rx in bgp_control.list_rr_rx_neighbor_rows():
-            if str(rx.get("address") or "").strip() == ip:
-                return _neighbor_out_from_agent(conn, rx)
-        return _neighbor_out_from_agent(
+        return _neighbor_out_fast(
             conn,
-            {
-                "vrf": vrf_use,
-                "address": ip,
-                "remote_as": body.remote_as,
-                "state": "IDLE",
-                "enabled": True,
-                "local_address": sip,
-            },
+            vrf=vrf_use,
+            neighbor_ip=ip,
+            remote_as=int(body.remote_as),
+            source_ip=sip,
         )
     sip = _resolve_satellite_bgp_source_ip(vrf_norm, body.source_ip)
     mh = _satellite_bgp_ebgp_multihop(vrf_norm)
     bind_if = ""
     passive = False
     _ensure_kernel_vrf_if_missing(vrf_norm, body.create_kernel_vrf_if_missing, body.kernel_rt_table)
-    if _agent_neighbor_row(conn, vrf_norm, ip):
+    if storage.get_bgp_neighbor_meta_map(conn, vrf_norm).get(ip):
         raise HTTPException(status_code=409, detail={"code": "neighbor_already_exists", "vrf": vrf_norm, "neighbor_ip": ip})
     if _satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled():
         if not sip:
@@ -1246,14 +1470,15 @@ def _bgp_add_neighbor_impl(conn: sqlite3.Connection, body: BgpNeighborIn) -> Bgp
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"gobgp_neighbor_failed: {e}") from e
-    if sip and _satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled():
-        _bgp_ipvlan_reconcile_vrf_required(vrf_norm, peer_ip=ip)
-    _arp_reconcile_host_ip_best_effort()
-    row = _agent_neighbor_row(conn, vrf_norm, ip)
-    if row:
-        return _neighbor_out_from_agent(conn, row)
-    return _neighbor_out_from_agent(
-        conn, {"vrf": vrf_norm, "address": ip, "remote_as": body.remote_as, "local_address": sip, "state": "Active", "enabled": True}
+    # ipvlan 已在下发 Agent 前收敛；卫星 /32 由 ipvlan 承载，无需再扫全库 ARP host-ip
+    if not (_satellite_style_vrf_name(vrf_norm) and bgp_ipvlan_reconcile.enabled()):
+        _arp_reconcile_host_ip_best_effort()
+    return _neighbor_out_fast(
+        conn,
+        vrf=vrf_norm,
+        neighbor_ip=ip,
+        remote_as=int(body.remote_as),
+        source_ip=sip or "",
     )
 
 
@@ -1277,11 +1502,11 @@ def api_global_put(body: GlobalIn):
     conn = _db()
     try:
         # 先下发 nft / 再落库，避免 nft 失败时库已改、前端状态与 toast 不一致
-        _apply_nft(conn, hijack_enabled=body.hijack_enabled)
+        _apply_nft(conn, hijack_enabled=body.hijack_enabled, full_table_reload=True)
         storage.set_global(conn, body.hijack_enabled)
         # 实验室 ICMP TE 改写走 iptables FORWARD → te_rewrite_nfqueue，与 nft TE SNAT 并行；
         # 总开关关闭时必须清空 TE 映射并重启守护进程，否则会仍按 hop 规则替换。
-        _sync_te_rewrite_best_effort(conn)
+        _sync_te_rewrite_best_effort(conn, flush_iptables_legacy=True)
         return GlobalOut(hijack_enabled=body.hijack_enabled)
     finally:
         conn.close()
@@ -1559,6 +1784,170 @@ def api_bgp_ipvlan_satellites_reconcile():
     return bgp_ipvlan_reconcile.reconcile_from_op_database(DB_PATH)
 
 
+def _static_route_out(row: storage.StaticRoute, *, reconcile: bool = True) -> StaticRouteOut:
+    d = static_route_sync.enrich_route(row, DB_PATH, reconcile=reconcile)
+    d["created_at"] = d.get("created_at") or row.created_at or ""
+    d["updated_at"] = d.get("updated_at") or row.updated_at or ""
+    return StaticRouteOut(**d)
+
+
+@app.get("/api/static-routes/scopes")
+def api_static_routes_scopes():
+    return static_route_sync.list_scopes(DB_PATH)
+
+
+@app.get("/api/static-routes", response_model=List[StaticRouteOut])
+def api_static_routes_list(reconcile: bool = Query(True)):
+    conn = _db()
+    try:
+        rows = storage.list_static_routes(conn)
+        return [_static_route_out(r, reconcile=reconcile) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/api/static-routes", response_model=StaticRouteOut)
+def api_static_routes_post(body: StaticRouteIn):
+    conn = _db()
+    try:
+        existing = storage.find_static_route_by_fib_key(
+            conn,
+            dst_cidr=body.dst_cidr,
+            gateway_ip=body.gateway_ip,
+            egress_iface=body.egress_iface,
+            pref_src=body.pref_src,
+            install_scope=body.install_scope,
+            routing_mark=body.routing_mark,
+            table_id=body.table_id,
+            metric=body.metric,
+            cross_vrf=body.cross_vrf,
+            nexthop_scope=body.nexthop_scope,
+            nexthop_mark=body.nexthop_mark,
+        )
+        save_enabled = bool(body.enabled)
+        if existing:
+            storage.update_static_route(
+                conn,
+                existing.id,
+                enabled=save_enabled,
+                note=body.note,
+                dst_cidr=body.dst_cidr,
+                gateway_ip=body.gateway_ip,
+                egress_iface=body.egress_iface,
+                pref_src=body.pref_src,
+                install_scope=body.install_scope,
+                routing_mark=body.routing_mark,
+                table_id=body.table_id,
+                metric=body.metric,
+                cross_vrf=body.cross_vrf,
+                nexthop_scope=body.nexthop_scope,
+                nexthop_mark=body.nexthop_mark,
+            )
+            row = storage.get_static_route(conn, existing.id)
+        else:
+            rid = storage.insert_static_route(
+                conn,
+                enabled=save_enabled,
+                note=body.note,
+                dst_cidr=body.dst_cidr,
+                gateway_ip=body.gateway_ip,
+                egress_iface=body.egress_iface,
+                pref_src=body.pref_src,
+                install_scope=body.install_scope,
+                routing_mark=body.routing_mark,
+                table_id=body.table_id,
+                metric=body.metric,
+                cross_vrf=body.cross_vrf,
+                nexthop_scope=body.nexthop_scope,
+                nexthop_mark=body.nexthop_mark,
+            )
+            row = storage.get_static_route(conn, rid)
+        if not row:
+            raise HTTPException(status_code=500, detail="insert_failed")
+        static_route_sync.persist_route_after_db_change(row, DB_PATH)
+        return _static_route_out(row)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        conn.close()
+
+
+@app.patch("/api/static-routes/{rid}", response_model=StaticRouteOut)
+def api_static_routes_patch(rid: int, body: StaticRoutePatch):
+    conn = _db()
+    try:
+        previous = storage.get_static_route(conn, rid)
+        if not previous:
+            raise HTTPException(status_code=404, detail="not_found")
+        ok = storage.update_static_route(
+            conn,
+            rid,
+            enabled=body.enabled,
+            note=body.note,
+            dst_cidr=body.dst_cidr,
+            gateway_ip=body.gateway_ip,
+            egress_iface=body.egress_iface,
+            pref_src=body.pref_src,
+            install_scope=body.install_scope,
+            routing_mark=body.routing_mark,
+            table_id=body.table_id,
+            metric=body.metric,
+            cross_vrf=body.cross_vrf,
+            nexthop_scope=body.nexthop_scope,
+            nexthop_mark=body.nexthop_mark,
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="not_found")
+        row = storage.get_static_route(conn, rid)
+        if not row:
+            raise HTTPException(status_code=404, detail="not_found")
+        static_route_sync.persist_route_after_db_change(row, DB_PATH, previous=previous)
+        return _static_route_out(row)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        conn.close()
+
+
+@app.delete("/api/static-routes/{rid}")
+def api_static_routes_delete(rid: int, del_kernel: bool = Query(True)):
+    conn = _db()
+    try:
+        row = storage.get_static_route(conn, rid)
+        if not row:
+            raise HTTPException(status_code=404, detail="not_found")
+        kernel_result = None
+        if del_kernel:
+            kernel_result = static_route_sync.delete_route(row, DB_PATH)
+        if not storage.delete_static_route(conn, rid):
+            raise HTTPException(status_code=404, detail="not_found")
+        return {"ok": True, "kernel": kernel_result}
+    finally:
+        conn.close()
+
+
+@app.post("/api/static-routes/apply", response_model=StaticRouteApplyOut)
+async def api_static_routes_apply(body: StaticRouteIdsBody = StaticRouteIdsBody()):
+    conn = _db()
+    try:
+        rows = storage.list_static_routes(conn)
+    finally:
+        conn.close()
+    return await _run_blocking_call(static_route_sync.apply_routes, DB_PATH, rows, body.ids)
+
+
+@app.post("/api/static-routes/probe", response_model=StaticRouteProbeOut)
+async def api_static_routes_probe(body: StaticRouteIdsBody = StaticRouteIdsBody()):
+    conn = _db()
+    try:
+        rows = storage.list_static_routes(conn, enabled_only=True)
+    finally:
+        conn.close()
+    return await _run_blocking_call(
+        static_route_sync.probe_routes, DB_PATH, rows, body.ids, body.probe_dst
+    )
+
+
 @app.get("/api/host-ifaces")
 def api_host_ifaces():
     return {"ifaces": _list_net_ifaces_linux()}
@@ -1665,36 +2054,7 @@ def api_bgp_neighbors_list(vrf: Optional[str] = Query(None)):
                     continue
                 seen_rr.add(nip)
             out.append(_neighbor_out_from_agent(conn, row, fast_list=fast_list))
-        rr_rx_rows = [x for x in rows if str(x.get("session") or "").lower() == "rx"]
-        for vrf_m, nip_m, meta in _iter_rr_meta_rows(conn):
-            if nip_m in seen_rr:
-                continue
-            if q and vrf_m != storage.validate_vrf_name(q):
-                continue
-            rx_row = next(
-                (x for x in rr_rx_rows if str(x.get("address") or "").strip() == nip_m),
-                None,
-            )
-            if rx_row:
-                out.append(_neighbor_out_from_agent(conn, rx_row, fast_list=fast_list))
-            else:
-                out.append(
-                    _neighbor_out_from_agent(
-                        conn,
-                        {
-                            "vrf": vrf_m,
-                            "address": nip_m,
-                            "remote_as": meta.get("remote_as") or bgp_control.default_local_as(),
-                            "state": "IDLE",
-                            "enabled": True,
-                            "pfx_rcd": 0,
-                            "pfx_adv": 0,
-                            "local_address": meta.get("source_ip") or "",
-                        },
-                        fast_list=fast_list,
-                    )
-                )
-            seen_rr.add(nip_m)
+        _append_meta_neighbors_not_in_list(conn, out, rows, q or None, fast_list=fast_list)
         return out
     finally:
         conn.close()
@@ -2508,10 +2868,23 @@ async def api_bgp_learned_routes_filter_options():
         conn.close()
 
 
+def _normalize_bgp_prefix_exact(raw: str) -> str:
+    """IPv4 前缀精确匹配（无 / 视为 /32）。"""
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("empty prefix")
+    if "/" not in s:
+        s = f"{s}/32"
+    return str(ipaddress.ip_network(s, strict=False))
+
+
 @app.get("/api/bgp/learned-routes", response_model=BgpLearnedRoutesSnapshotOut)
 async def api_bgp_learned_routes_list(
     vrf: Optional[str] = Query(None, description="按 VRF 筛选；省略表示全部"),
     neighbor_ip: Optional[str] = Query(None, description="按来源邻居 IP 精确筛选；省略表示全部"),
+    prefix: Optional[str] = Query(
+        None, description="按前缀精确查询（如 8.8.8.8/32 或 8.8.8.8）；与分页互斥"
+    ),
     route_window: Optional[str] = Query(
         None, description="upstream=RR 窗；downstream=下游窗；省略表示全部"
     ),
@@ -2535,6 +2908,13 @@ async def api_bgp_learned_routes_list(
         rw_raw = (route_window or "").strip().lower() or None
         if rw_raw and rw_raw not in {"upstream", "downstream"}:
             raise HTTPException(status_code=400, detail="invalid route_window")
+        pfx_norm: Optional[str] = None
+        pfx_raw = (prefix or "").strip()
+        if pfx_raw:
+            try:
+                pfx_norm = _normalize_bgp_prefix_exact(pfx_raw)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"invalid prefix: {e}") from e
 
         frozen_map = storage.get_bgp_peer_frozen_map(conn)
         peer_snaps = storage.list_bgp_peer_snapshots_brief(conn)
@@ -2562,10 +2942,22 @@ async def api_bgp_learned_routes_list(
 
         routes: list[BgpLearnedRouteOut] = []
         total = 0
+        raw_routes: list[dict] = []
+        page_out = page
+        page_size_out = page_size
         if peers:
-            if len(peers) == 1:
+            if pfx_norm:
+                page_out = 1
+                for v, ip, role in peers:
+                    item = await _run_blocking_call(
+                        bgp_peer_rib.get_peer_rib_route, v, ip, role, pfx_norm
+                    )
+                    if item:
+                        raw_routes.append(item)
+                total = len(raw_routes)
+                page_size_out = max(total, 1)
+            elif len(peers) == 1:
                 v, ip, role = peers[0]
-                rw_use = rw_raw or storage.route_window_for_bgp_role(role)
                 data = await _run_blocking_call(
                     bgp_peer_rib.list_peer_rib_routes_page,
                     v,
@@ -2575,13 +2967,13 @@ async def api_bgp_learned_routes_list(
                     page_size,
                 )
                 total = int(data.get("total") or 0)
-                raw_routes = data.get("routes") or []
+                raw_routes = list(data.get("routes") or [])
             else:
                 data = await _run_blocking_call(
                     bgp_peer_rib.list_merged_rib_routes_page, peers, page, page_size
                 )
                 total = int(data.get("total") or 0)
-                raw_routes = data.get("routes") or []
+                raw_routes = list(data.get("routes") or [])
 
             for item in raw_routes:
                 v = str(item.get("vrf") or "")
@@ -2613,8 +3005,8 @@ async def api_bgp_learned_routes_list(
             last_sync_error="",
             routes=routes,
             total=total,
-            page=page,
-            page_size=page_size,
+            page=page_out,
+            page_size=page_size_out,
             route_window=rw_raw,
             summary=summary,
             peer_snapshots=peer_snaps,

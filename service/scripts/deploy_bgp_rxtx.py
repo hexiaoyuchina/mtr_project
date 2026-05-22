@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 try:
     import paramiko
@@ -29,6 +30,8 @@ API_ADDR = os.environ.get("API_ADDR", ":9179")
 
 OP_DOWNSTREAM_IFACE = os.environ.get("MTR_OP_DOWNSTREAM_IFACE", "eno1np0")
 OP_RR_UPLINK_IFACE = os.environ.get("MTR_BGP_RR_UPLINK_IFACE", "enp59s0f0np0")
+TE_REWRITE_OIF = os.environ.get("MTR_TE_REWRITE_OIF", OP_DOWNSTREAM_IFACE).strip()
+TE_REWRITE_IIF = os.environ.get("MTR_TE_REWRITE_IIF", OP_RR_UPLINK_IFACE).strip()
 RR_SPOOF_IPVLAN_ADDR = os.environ.get("MTR_BGP_RR_SPOOF_IPVLAN_ADDR", "0").strip()
 SATELLITE_PEER_IP = os.environ.get("MTR_SATELLITE_PEER_IP", "139.159.43.208")
 PROBE_SSH_HOST = os.environ.get("MTR_PROBE_SSH_HOST", OP_HOST)
@@ -36,6 +39,14 @@ PROBE_SSH_HOST = os.environ.get("MTR_PROBE_SSH_HOST", OP_HOST)
 SKIP_NAMES = {"venv", ".venv", "__pycache__", ".git", ".idea"}
 SKIP_FILE_SUFFIX = (".db", ".pyc", ".exe")
 SKIP_FILE_NAMES = {"bgp_agent", "go.tar.gz"}
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _tools_path() -> str:
+    return str(_repo_root() / "tools")
 
 
 def bash(c: paramiko.SSHClient, script: str, timeout: int = 1200) -> tuple[int, str]:
@@ -67,21 +78,64 @@ def upload_tree(sftp: paramiko.SFTPClient, local_dir: str, remote_dir: str) -> N
             sftp.put(lp, rp)
 
 
-def main() -> None:
-    if not OP_PASS:
-        print("请设置环境变量 MTR_OP_SSH_PASSWORD", file=sys.stderr)
-        sys.exit(2)
+def _load_env_file(path: Path) -> None:
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() and k.strip() not in os.environ:
+            os.environ[k.strip()] = v.strip()
 
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    service = os.path.join(root, "service")
-    nfq = os.path.join(root, "scripts", "mtr_spoof_nfqueue.py")
+
+def main() -> None:
+    root = _repo_root()
+    _load_env_file(root / "109" / "env")
+    op_pass = os.environ.get("MTR_OP_SSH_PASSWORD", "").strip()
+    if not op_pass:
+        print("请设置环境变量 MTR_OP_SSH_PASSWORD（或 109/env）", file=sys.stderr)
+        sys.exit(2)
+    op_host = os.environ.get("MTR_OP_HOST", OP_HOST).strip()
+    op_user = os.environ.get("MTR_OP_SSH_USER", OP_USER).strip()
+    op_dir = os.environ.get("MTR_OP_REMOTE_DIR", OP_DIR).strip()
+    op_port = int(os.environ.get("MTR_OP_PORT", str(OP_PORT)))
+    downstream = os.environ.get("MTR_OP_DOWNSTREAM_IFACE", OP_DOWNSTREAM_IFACE).strip()
+    rr_uplink = os.environ.get("MTR_BGP_RR_UPLINK_IFACE", OP_RR_UPLINK_IFACE).strip()
+    te_oif = os.environ.get("MTR_TE_REWRITE_OIF", downstream).strip()
+    te_iif = os.environ.get("MTR_TE_REWRITE_IIF", rr_uplink).strip()
+    rr_spoof = os.environ.get("MTR_BGP_RR_SPOOF_IPVLAN_ADDR", RR_SPOOF_IPVLAN_ADDR).strip()
+    sat_peer = os.environ.get("MTR_SATELLITE_PEER_IP", SATELLITE_PEER_IP).strip()
+    probe_host = os.environ.get("MTR_PROBE_SSH_HOST", op_host).strip()
+    service = str(root / "service")
+    sys.path.insert(0, _tools_path())
+    from bgp_agent_build import (  # noqa: E402
+        bgp_agent_binary,
+        build_bgp_agent_for_deploy,
+        prebuilt_deploy_enabled,
+        remote_rebuild_enabled,
+        should_run_local_build,
+    )
+
+    use_prebuilt = prebuilt_deploy_enabled(root)
+    if use_prebuilt and should_run_local_build(root):
+        print("\n=== 本地编译 bgp_agent（跳过 VR go build）===", flush=True)
+        build_bgp_agent_for_deploy(root)
+    elif use_prebuilt and not bgp_agent_binary(root).is_file():
+        print("未找到 service/bgp_agent/bgp_agent，请先: python tools/bgp_agent_build.py", file=sys.stderr)
+        sys.exit(2)
+    te_nfq = str(root / "scripts" / "te_rewrite_nfqueue.py")
     if not os.path.isdir(service):
         print(f"缺少 service/: {service}", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(te_nfq):
+        print(f"缺少 {te_nfq}", file=sys.stderr)
         sys.exit(1)
 
     print("=" * 60)
     print("BGP RX/TX 架构部署")
-    print(f"  目标: {OP_USER}@{OP_HOST}:{OP_DIR}")
+    print(f"  目标: {op_user}@{op_host}:{op_dir}")
     print(f"  RR:   {RR_ADDR} AS{RR_AS}")
     print(f"  本地: AS{LOCAL_AS} router-id {ROUTER_ID}")
     print("=" * 60)
@@ -89,9 +143,9 @@ def main() -> None:
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(
-        OP_HOST,
-        username=OP_USER,
-        password=OP_PASS,
+        op_host,
+        username=op_user,
+        password=op_pass,
         timeout=30,
         banner_timeout=30,
         allow_agent=False,
@@ -106,7 +160,7 @@ set -e
 pkill -f 'uvicorn app.main' 2>/dev/null || true
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
 sleep 1
-mkdir -p {OP_DIR}
+mkdir -p {op_dir}
 mkdir -p $(dirname {ROCKSDB_PATH})
 echo "保留目录完成"
 """
@@ -119,8 +173,8 @@ pkill -f bgp_agent 2>/dev/null || true
 pkill -f 'uvicorn app.main' 2>/dev/null || true
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
 sleep 2
-rm -rf {OP_DIR}
-mkdir -p {OP_DIR}
+rm -rf {op_dir}
+mkdir -p {op_dir}
 mkdir -p $(dirname {ROCKSDB_PATH})
 echo "清理完成"
 """
@@ -132,9 +186,17 @@ echo "清理完成"
     print("\n=== 2. 上传代码 ===")
     sftp = c.open_sftp()
     try:
-        upload_tree(sftp, service, OP_DIR)
-        if os.path.isfile(nfq):
-            sftp.put(nfq, f"{OP_DIR}/mtr_spoof_nfqueue.py")
+        upload_tree(sftp, service, op_dir)
+        sftp.put(te_nfq, f"{op_dir}/te_rewrite_nfqueue.py")
+        if use_prebuilt:
+            local_bin = bgp_agent_binary(root)
+            remote_bin = f"{op_dir}/bgp_agent/bgp_agent"
+            try:
+                sftp.mkdir(f"{op_dir}/bgp_agent")
+            except OSError:
+                pass
+            sftp.put(str(local_bin), remote_bin)
+            print(f"  预编译 bgp_agent -> {remote_bin} ({local_bin.stat().st_size} bytes)")
     finally:
         sftp.close()
     print("上传完成")
@@ -168,7 +230,7 @@ fi
 export PATH=/usr/local/go/bin:$PATH
 go version
 
-cd {OP_DIR}
+cd {op_dir}
 rm -rf venv
 python3 -m venv venv
 ./venv/bin/pip install -U pip wheel setuptools -q \\
@@ -185,23 +247,40 @@ echo "Python 依赖 OK"
             print(f"安装失败 exit={code}", file=sys.stderr)
             sys.exit(code)
 
-    print("\n=== 4. 编译并安装 BGP Agent ===")
-    build = f"""
+    remote_build = remote_rebuild_enabled() and not use_prebuilt
+    print(
+        "\n=== 4. 安装 BGP Agent ==="
+        + (" (VR go build)" if remote_build else " (本机预编译二进制)")
+    )
+    build_preamble = f"""
 set -e
+mkdir -p {ROCKSDB_PATH}
+chown -R root:root $(dirname {ROCKSDB_PATH}) || true
+"""
+    compile_block = ""
+    if remote_build:
+        compile_block = f"""
 export PATH=/usr/local/go/bin:$PATH
 export GOPROXY=https://goproxy.cn,direct
 export GOSUMDB=sum.golang.google.cn
 export CGO_ENABLED=1
-mkdir -p {ROCKSDB_PATH}
-chown -R root:root $(dirname {ROCKSDB_PATH}) || true
-
-cd {OP_DIR}/bgp_agent
+cd {op_dir}/bgp_agent
 go mod tidy
 go mod download
 go build -o bgp_agent -ldflags="-s -w" .
 test -x ./bgp_agent
-echo "编译成功: $(./bgp_agent -h 2>&1 | head -1 || true)"
-
+echo "远端编译成功: $(./bgp_agent -h 2>&1 | head -1 || true)"
+"""
+    else:
+        compile_block = f"""
+chmod +x {op_dir}/bgp_agent/bgp_agent
+test -x {op_dir}/bgp_agent/bgp_agent || {{ echo "缺少预编译 {op_dir}/bgp_agent/bgp_agent"; exit 2; }}
+echo "使用本机预编译: $(ls -la {op_dir}/bgp_agent/bgp_agent)"
+"""
+    build = (
+        build_preamble
+        + compile_block
+        + f"""
 cat > /etc/systemd/system/bgp-agent.service <<'UNIT'
 [Unit]
 Description=BGP RX/TX Agent (GoBGP)
@@ -210,9 +289,9 @@ Wants=redis-server.service
 
 [Service]
 Type=simple
-WorkingDirectory={OP_DIR}/bgp_agent
+WorkingDirectory={op_dir}/bgp_agent
 Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
-ExecStart={OP_DIR}/bgp_agent/bgp_agent \\
+ExecStart={op_dir}/bgp_agent/bgp_agent \\
   -local-as {LOCAL_AS} -router-id {ROUTER_ID} \\
   -redis {REDIS_ADDR} -rocksdb {ROCKSDB_PATH} \\
   -api {API_ADDR}
@@ -244,9 +323,9 @@ echo ""
     print("\n=== 5. 启动 Python OP + NFQUEUE ===")
     run = f"""
 set -e
-if [ ! -x {OP_DIR}/venv/bin/uvicorn ]; then
+if [ ! -x {op_dir}/venv/bin/uvicorn ]; then
   echo "创建 Python venv..."
-  cd {OP_DIR}
+  cd {op_dir}
   python3 -m venv venv
   ./venv/bin/pip install -U pip wheel setuptools -q -i https://pypi.tuna.tsinghua.edu.cn/simple
   ./venv/bin/pip install -r requirements.txt -q -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -255,41 +334,46 @@ pkill -f 'uvicorn app.main' 2>/dev/null || true
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
 sleep 1
 nft delete table inet mtr_spoof 2>/dev/null || true
-if [ -f {OP_DIR}/nft_mtr_spoof.nft ]; then
-  nft -f {OP_DIR}/nft_mtr_spoof.nft || echo "WARN: nft load failed"
+nft delete table inet mtr_te 2>/dev/null || true
+if [ -f {op_dir}/nft_mtr_te.nft ]; then
+  nft -f {op_dir}/nft_mtr_te.nft || echo "WARN: nft load failed"
 fi
 
-cd {OP_DIR}
+cd {op_dir}
 export GOBGP_AGENT_URL=http://127.0.0.1:9179
-export MTR_OP_DB={OP_DIR}/data.db
-export MTR_OP_NFT={OP_DIR}/nft_mtr_spoof.nft
-export MTR_OP_DATA={OP_DIR}/data
+export MTR_OP_DB={op_dir}/data.db
+export MTR_OP_NFT={op_dir}/nft_mtr_te.nft
+export MTR_TE_REWRITE_SCRIPT={op_dir}/te_rewrite_nfqueue.py
+export MTR_OP_DATA={op_dir}/data
+export MTR_OP_DOWNSTREAM_IFACE={downstream}
 export MTR_BGP_IPVLAN_AUTO=1
-export MTR_BGP_IPVLAN_BASE_IFACE={OP_DOWNSTREAM_IFACE}
-export MTR_BGP_RR_UPLINK_IFACE={OP_RR_UPLINK_IFACE}
-export MTR_BGP_RR_SPOOF_IPVLAN_ADDR={RR_SPOOF_IPVLAN_ADDR}
-export MTR_BGP_IPVLAN_PEER_IP={SATELLITE_PEER_IP}
-export MTR_PROBE_SSH_HOST={PROBE_SSH_HOST}
+export MTR_BGP_IPVLAN_BASE_IFACE={downstream}
+export MTR_BGP_RR_UPLINK_IFACE={rr_uplink}
+export MTR_TE_REWRITE_OIF={te_oif}
+export MTR_TE_REWRITE_IIF={te_iif}
+export MTR_BGP_RR_SPOOF_IPVLAN_ADDR={rr_spoof}
+export MTR_BGP_IPVLAN_PEER_IP={sat_peer}
+export MTR_PROBE_SSH_HOST={probe_host}
 
 : > /tmp/mtr_op.log
-nohup ./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port {OP_PORT} >> /tmp/mtr_op.log 2>&1 &
+nohup env MTR_OP_DB="$MTR_OP_DB" MTR_OP_NFT="$MTR_OP_NFT" \\
+  MTR_TE_REWRITE_SCRIPT="$MTR_TE_REWRITE_SCRIPT" \\
+  MTR_OP_DOWNSTREAM_IFACE="$MTR_OP_DOWNSTREAM_IFACE" \\
+  MTR_TE_REWRITE_OIF="$MTR_TE_REWRITE_OIF" MTR_TE_REWRITE_IIF="$MTR_TE_REWRITE_IIF" \\
+  MTR_BGP_IPVLAN_BASE_IFACE="$MTR_BGP_IPVLAN_BASE_IFACE" \\
+  MTR_BGP_RR_UPLINK_IFACE="$MTR_BGP_RR_UPLINK_IFACE" \\
+  ./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port {op_port} >> /tmp/mtr_op.log 2>&1 &
 sleep 4
-
-NFQ_PY="./venv/bin/python"
-[ -x "$NFQ_PY" ] || NFQ_PY=python3
-: > /tmp/mtr_spoof_nfqueue.log
-nohup $NFQ_PY {OP_DIR}/mtr_spoof_nfqueue.py --op-db {OP_DIR}/data.db --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
-sleep 2
 
 echo "=== 进程 ==="
 pgrep -af bgp_agent || true
 pgrep -af uvicorn || true
-pgrep -af mtr_spoof || true
+pgrep -af te_rewrite || true
 
 echo "=== 健康检查 ==="
-curl -s http://127.0.0.1:{OP_PORT}/health || true
+curl -s http://127.0.0.1:{op_port}/health || true
 echo ""
-curl -s http://127.0.0.1:{OP_PORT}/api/gobgp/status || true
+curl -s http://127.0.0.1:{op_port}/api/gobgp/status || true
 echo ""
 """
     code, out = bash(c, run, timeout=180)
@@ -298,7 +382,7 @@ echo ""
 
     print("\n" + "=" * 60)
     print("部署完成")
-    print(f"  管理界面: http://{OP_HOST}:{OP_PORT}/")
+    print(f"  管理界面: http://{op_host}:{op_port}/")
     print(f"  GoBGP API: http://{OP_HOST}:9179/api/status")
     print("=" * 60)
 

@@ -19,6 +19,13 @@ def bgp_agent_config_from_env() -> Dict[str, str]:
     }
 
 
+def deploy_exec_timeout(*, remote_rebuild: bool) -> int:
+    """SSH 脚本超时：健康检查最多约 600s，远程 go build 需更长。"""
+    if remote_rebuild:
+        return int(os.environ.get("MTR_DEPLOY_SSH_TIMEOUT", "2400"))
+    return int(os.environ.get("MTR_DEPLOY_SSH_TIMEOUT", "720"))
+
+
 def shell_sync_bgp_agent(cfg: Mapping[str, str], *, rebuild: bool = False) -> str:
     """生成在目标机执行的 bash：更新 unit、daemon-reload、restart、health + status。"""
     op_dir = cfg["remote_dir"]
@@ -40,6 +47,7 @@ fi
     return f"""
 set -e
 {rebuild_block}
+chmod +x {op_dir}/bgp_agent/bgp_agent 2>/dev/null || true
 mkdir -p {rocks}
 mkdir -p /var/lib/bgp_agent
 cat > /etc/systemd/system/bgp-agent.service <<'UNIT'

@@ -31,7 +31,9 @@ python tools/deploy_light.py
 
 环境变量：`MTR_OP_SSH_PASSWORD`、`MTR_OP_HOST`（默认 `101.89.68.109`）。
 
-**常见问题**：远端若 **`pip install scapy`** 覆盖发行版包，可能与 **`cryptography`** 不兼容导致 NFQUEUE 日志报错——部署脚本已改为 **仅用 apt 的 `python3-scapy`**，并 **`pip uninstall scapy`** 避免冲突；API 若 **`python3 -m venv` 失败**，脚本会 **改用系统 `pip3 install fastapi uvicorn` + `python3 -m uvicorn`**。
+**常见问题**：**`te_rewrite_nfqueue.py` 不依赖 scapy**（系统 `python3` + NetfilterQueue 即可）。**ARP 守护**若需 scapy，部署脚本优先 **apt `python3-scapy`**，避免 **`pip install scapy`** 与 **`cryptography`** 冲突。API 若 **`python3 -m venv` 失败**，脚本会改用系统 **`pip3 install fastapi uvicorn`**。
+
+仅改 OP/TE、不动 bgp-agent：`python tools/deploy_light.py --op-only`（见 [`docs/部署.md`](../docs/部署.md)）。
 
 systemd 示例：[`systemd/mtr-op.service`](systemd/mtr-op.service)（`WorkingDirectory=/root/mtr_op`）。
 
@@ -57,8 +59,8 @@ systemd 示例：[`systemd/mtr-op.service`](systemd/mtr-op.service)（`WorkingDi
 |------|------|
 | 后端 | Python 3 + **FastAPI** + **Uvicorn** |
 | 持久化 | **SQLite**（`data.db`，路径由环境变量 `MTR_OP_DB` 指定） |
-| 内核 | **nftables** 表 `inet mtr_spoof`：总开关开启时 **任意 IPv4 源 ICMP Echo-request 进 NFQUEUE**（[`nft_mtr_spoof.nft`](nft_mtr_spoof.nft) 与 [`../scripts/nft_mtr_spoof.nft`](../scripts/nft_mtr_spoof.nft) 一致） |
-| 用户态代答 | [`mtr_spoof_nfqueue.py`](../scripts/mtr_spoof_nfqueue.py) 按 Echo 目的 IP 动态探测路径并套用 **hop_replace_rules** |
+| 内核 | **iptables mangle**：转发的 **ICMP Time Exceeded** → NFQUEUE；**nft** 表 `ip mtr_te_snat` 为 TE SNAT 占位（[`nft_mtr_te.nft`](nft_mtr_te.nft)） |
+| 用户态 | [`te_rewrite_nfqueue.py`](../scripts/te_rewrite_nfqueue.py) 按 **hop_replace_rules** 改写 TE **外层源 IP** 为 `forged_src` |
 
 ---
 
@@ -73,17 +75,17 @@ flowchart LR
   subgraph linux200 [Linux_200]
     API[FastAPI]
     DB[(SQLite)]
-    NFT[nft_ICMP_queue]
-    NFQ[mtr_spoof_nfqueue]
+    IPT[iptables_mangle_NFQUEUE]
+    NFQ[te_rewrite_nfqueue]
   end
   StaticPage -->|同源_fetch| API
   Swagger --> API
   API --> DB
-  API --> NFT
-  NFT -->|NFQUEUE| NFQ
+  API --> IPT
+  IPT -->|NFQUEUE| NFQ
 ```
 
-加载顺序须遵守 [`step.md`](../step.md) 第十三节：**先起 NFQUEUE，再加载/更新 nft**，避免队列无人接管。
+**hijack_enabled** 开启时由 `te_rewrite_sync` **先 bind NFQUEUE 再装 iptables**，并拉起 **`te_rewrite_nfqueue`**；关闭时清空映射、拆 NFQUEUE、停止守护。改 hop 规则默认 **SIGHUP 热加载**（不 pkill）。排障见 [`docs/MTR_TE_REWRITE.md`](../docs/MTR_TE_REWRITE.md)。
 
 ---
 
@@ -93,15 +95,15 @@ flowchart LR
 |------|------|------|
 | `GET` | `/health` | 存活检测 |
 | `GET` | `/api/global` | `hijack_enabled` |
-| `PUT` | `/api/global` | body：`{"hijack_enabled": true/false}`，写入/清空 nft **ICMP Echo → queue** |
+| `PUT` | `/api/global` | body：`{"hijack_enabled": true/false}`，TE 改写总开关（nft SNAT 占位 + iptables NFQUEUE + te_rewrite 守护） |
 | `GET` | `/api/hop-rules` | 逐跳替换规则列表 |
 | `POST` | `/api/hop-rules` | 新增规则 |
 | `PATCH` | `/api/hop-rules/{id}` | 更新规则 |
 | `DELETE` | `/api/hop-rules/{id}` | 删除规则 |
 | `GET`/`PUT` | `/api/arp-spoof/settings` | ARP 引流总开关 |
 | `GET`/`POST`/`PATCH`/`DELETE` | `/api/arp-spoof/targets` | 冒充网关条目；保存后会触发 BGP ipvlan 卫星收敛（`MTR_BGP_IPVLAN_AUTO`，默认开），带 `satellite_vrf` 的条目由对应 VRF 持有 /32，不再额外加到物理口主表 |
-| `POST` | `/api/arp-spoof/satellite-vrfs/reconcile` | 按当前库 + 环境变量执行卫星 VRF 对齐；返回旧 veth 方案和新 ipvlan L2 方案的结果，便于 **cron** 或手工补跑 |
-| `POST` | `/api/bgp/ipvlan-satellites/reconcile` | 仅执行新 ipvlan L2 卫星 BGP 收敛：创建/维护 `iv{末字节}@物理口`、VRF 路由、清理干扰 `ip rule` |
+| `POST` | `/api/arp-spoof/satellite-vrfs/reconcile` | 按当前库 + 环境变量执行卫星 VRF 对齐（ipvlan L2 + **ip rule** + **nft DNAT**；含 legacy veth 摘要） |
+| `POST` | `/api/bgp/ipvlan-satellites/reconcile` | 仅 ipvlan L2 收敛：`iv*`、VRF 路由、**ip rule**、**`mtr_bgp_sat_dnat`**（见 [BGP_SATELLITE_IP_RULE_AND_DNAT.md](../docs/BGP_SATELLITE_IP_RULE_AND_DNAT.md)） |
 | `GET` | `/api/bgp/vrfs` | meta / 卫星配置 / 内核 **`ip link type vrf`** 中的 VRF 列表 |
 | `POST` | `/api/bgp/instances` | 按需创建内核 VRF（GoBGP 按 VRF 懒启动 TX，不依赖 FRR） |
 | `GET` | `/api/bgp/neighbors` | 从 **bgp-agent** 读邻居；与 SQLite meta 合并展示 |
@@ -119,12 +121,11 @@ flowchart LR
 | `POST` | `/api/vpn/ping` | VRF 内连通性探测 |
 | `GET` | `/api/vpn/events` | 最近 VPN 事件 |
 
-角色默认映射：环境变量 **`MTR_BGP_ROLE_MAP`**（`ip:role` 逗号分隔）；未设置时内置实验室约定：
-**`10.133.153.204` → 上游（ROS）**，**`10.133.151.204`、`10.133.152.204`、`10.133.152.205` → 下游**。库中角色非 `unknown` 时视为 **手动** 覆盖。
+角色默认映射：环境变量 **`MTR_BGP_ROLE_MAP`**（`ip:role` 逗号分隔）；未设置时仅 **`139.159.43.249` → rr**、**`139.159.43.208` → downstream** 作 UI 提示。库中角色非 `unknown` 时视为 **手动** 覆盖。
 
-**写入库的预设（OP 列表显示为「手动」）**：**`MTR_BGP_DB_PRESETS`**，格式 ``vrf:neighbor_ip:role`` 逗号分隔；未设置时与上列现场一致（153.204 上游、152.204 下游）。
+**写入库的预设（OP 列表显示为「手动」）**：**`MTR_BGP_DB_PRESETS`**，格式 ``vrf:neighbor_ip:role`` 逗号分隔；**未设置时不自动写入任何邻居**（109 等现网在 `109/env` 中配置）。
 
-**卫星 BGP 自动化（当前推荐）**：模块 **`app/bgp_ipvlan_reconcile.py`**，对应 [`docs/bgp-ipvlan-setup.md`](../docs/bgp-ipvlan-setup.md) 的 `ipvlan l2 + VRF` 架构。开启 **`MTR_BGP_IPVLAN_AUTO=1`**（默认开）后，新增/修改 ARP 引流条目时，如果填写了 `satellite_vrf`（如 `vbgp250`），OP 会在 Linux 200 本机自动创建/维护 `iv250@<egress_iface>`、把 `10.133.152.250/32` 放入 `vbgp250`、写入到 **`MTR_BGP_IPVLAN_PEER_IP`**（默认沿用 **`MTR_SATELLITE_PEER_IP`** 或 `10.133.152.204`）的 VRF 路由，并清理会把 `10.133.152.25x` 拉回 main 表的干扰 `ip rule`。BGP 新增邻居时，若 VRF 为 `vbgp*` 且未显式填 `source_ip`，会自动使用 ARP 条目的 `spoof_gateway_ip` 作为 `update-source`，并且不下发 `ebgp-multihop`。
+**卫星 BGP 自动化（当前推荐）**：模块 **`app/bgp_ipvlan_reconcile.py`**，对应 [`docs/bgp-ipvlan-setup.md`](../docs/bgp-ipvlan-setup.md) 的 `ipvlan l2 + VRF` 架构；现网 **109** 另见 [`docs/BGP_SATELLITE_IP_RULE_AND_DNAT.md`](../docs/BGP_SATELLITE_IP_RULE_AND_DNAT.md)。开启 **`MTR_BGP_IPVLAN_AUTO=1`**（默认开）后，新增/修改 ARP 引流条目时，如果填写了 `satellite_vrf`（如 `vbgp13915943249`），OP 会在本机自动创建/维护 `iv{末字节}@<egress_iface>`、VRF 路由、**`ip rule from <冒充IP> lookup <卫星表>`**，并在 **`MTR_BGP_SAT_DNAT_AUTO=1`** 时写入 **`inet mtr_bgp_sat_dnat`**：下联口入站 **`daddr <冒充IP> tcp dport 179` → redirect 到该 VRF 的 TX 监听口**（非 RX `:179`）。BGP 新增邻居时，若 VRF 为 `vbgp*` 且未显式填 `source_ip`，会自动使用 ARP 条目的 `spoof_gateway_ip` 作为 TCP 源，并设置 **`bind_interface=iv*`**；卫星场景不下发 `ebgp-multihop`。补跑：`POST /api/arp-spoof/satellite-vrfs/reconcile` 或仓库 **`109/reconcile_satellite.py`**。
 
 **旧卫星 VRF 自动化（veth/underlay）**：模块 **`app/satellite_vrf_assign.py`**。当 **`MTR_BGP_IPVLAN_AUTO`** 开启时，保存 ARP 条目后的旧 veth/dummy 收敛会被跳过，避免与新方案冲突。仅在显式关闭 `MTR_BGP_IPVLAN_AUTO=0` 时继续使用旧方案及其 **`MTR_AUTO_SATELLITE_VRF`**、**`MTR_SATELLITE_PHY_VRF`**、**`MTR_SATELLITE_BGP_TCP_SOURCE`** 等配置。
 
@@ -144,7 +145,9 @@ flowchart LR
 
 - VPN 设计说明（仓库根 `docs/`）：[`VPN_EGRESS_DESIGN_NOTES.md`](../docs/VPN_EGRESS_DESIGN_NOTES.md)
 - VPN API smoke：`python service/scripts/verify_vpn_api.py`（环境变量 **`MTR_OP_API`**，默认 `http://127.0.0.1:8808`）
+- 操作手册：[`docs/OP_OPERATION_MANUAL.md`](../docs/OP_OPERATION_MANUAL.md)
 - 部署说明：[`docs/部署.md`](../docs/部署.md)
+- TE 改写 / 排障：[`docs/MTR_TE_REWRITE.md`](../docs/MTR_TE_REWRITE.md)
 - 轻量部署：[`tools/deploy_light.py`](../tools/deploy_light.py)
 - 全量部署：[`scripts/deploy_bgp_rxtx.py`](scripts/deploy_bgp_rxtx.py)
 - 依赖：[`requirements.txt`](requirements.txt)

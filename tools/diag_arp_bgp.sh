@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "=== arp spoof process ==="
-pgrep -af mtr_spoof || true
+pgrep -af te_rewrite || true
 echo "=== arp targets 249 ==="
 python3 -c "
 import sqlite3

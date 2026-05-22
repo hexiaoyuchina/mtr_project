@@ -198,7 +198,8 @@ python 109/apply_downstream_transit.py --teardown
 |------|------|------|
 | 回程走管理口 | 缺 2111 或 pref 29 | 再 apply |
 | mtr 超时 | `105.94 INCOMPLETE` | 再 apply（permanent neigh） |
-| 逐跳替换无效 | TE 未从 `eno1np0` 出 | 查 iptables NFQUEUE、`MTR_TE_REWRITE_OIF` |
+| 逐跳替换无效 | TE 未从 `eno1np0` 出；或 `hijack_enabled=false`；`match_cidr` 与 TE 外层源不符 | 查 [MTR_TE_REWRITE.md](./MTR_TE_REWRITE.md)、`MTR_TE_REWRITE_OIF` |
+| mtr 全 timeout / ??? | mangle 有 NFQUEUE 但 `te_rewrite` 未 bind；或守护启动失败 | `cat /proc/net/netfilter/nfnetlink_queue`、TE 日志；见 [MTR_TE_REWRITE.md](./MTR_TE_REWRITE.md) |
 | 重启后复发 | 未跑 persist 脚本 | 开机执行 `mtr-op-downstream-transit.sh` 或 cron |
 
 ### 割接：更换下游机（原 208）
@@ -214,4 +215,5 @@ python 109/apply_downstream_transit.py --teardown
 - [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md) — 三网口与 207/208/249
 - [BGP_ARP_SPOOF_MULTI_SESSION.md](./BGP_ARP_SPOOF_MULTI_SESSION.md) — 249 冒充与卫星 VRF
 - [部署.md](./部署.md) — 日常发版
+- [MTR_TE_REWRITE.md](./MTR_TE_REWRITE.md) — TE 改写与 NFQUEUE 排障
 - [109/MIGRATION.md](../109/MIGRATION.md) — 109 迁移清单

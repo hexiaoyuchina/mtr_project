@@ -1,0 +1,14 @@
+# TE 改写：table ip mtr_te_snat 由 OP 按 hop_replace_rules 动态写入 SNAT 占位规则。
+# 真实改写路径为 iptables mangle → NFQUEUE → te_rewrite_nfqueue.py（路径 A）。
+
+table inet mtr_te {
+  chain prerouting {
+    type filter hook prerouting priority -300; policy accept;
+  }
+}
+
+table ip mtr_te_snat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+  }
+}

@@ -91,6 +91,30 @@ class ArpSpoofTarget:
     created_at: str = ""
 
 
+STATIC_INSTALL_SCOPES = frozenset({"main", "table", "vrf"})
+STATIC_NEXTHOP_SCOPES = frozenset({"", "main", "table", "vrf"})
+
+
+@dataclass
+class StaticRoute:
+    id: int
+    enabled: bool
+    note: str
+    dst_cidr: str
+    gateway_ip: str
+    egress_iface: str
+    pref_src: str
+    install_scope: str
+    routing_mark: str
+    table_id: int
+    metric: int
+    cross_vrf: bool
+    nexthop_scope: str
+    nexthop_mark: str
+    created_at: str
+    updated_at: str
+
+
 @dataclass
 class BgpNeighborMeta:
     vrf: str
@@ -349,6 +373,29 @@ def init_schema(conn: sqlite3.Connection) -> None:
         )
     except sqlite3.OperationalError:
         pass
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS static_routes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          note TEXT NOT NULL DEFAULT '',
+          dst_cidr TEXT NOT NULL,
+          gateway_ip TEXT NOT NULL DEFAULT '',
+          egress_iface TEXT NOT NULL DEFAULT '',
+          pref_src TEXT NOT NULL DEFAULT '',
+          install_scope TEXT NOT NULL DEFAULT 'main',
+          routing_mark TEXT NOT NULL DEFAULT '',
+          table_id INTEGER NOT NULL DEFAULT 0,
+          metric INTEGER NOT NULL DEFAULT 0,
+          cross_vrf INTEGER NOT NULL DEFAULT 0,
+          nexthop_scope TEXT NOT NULL DEFAULT '',
+          nexthop_mark TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+        """
+    )
 
     conn.execute(
         """
@@ -722,6 +769,349 @@ def delete_arp_spoof_target(conn: sqlite3.Connection, target_id: int) -> bool:
     conn.execute("DELETE FROM arp_spoof_targets WHERE id = ?", (target_id,))
     conn.commit()
     return conn.execute("SELECT 1 FROM arp_spoof_targets WHERE id = ?", (target_id,)).fetchone() is None
+
+
+# === Static Routes ===
+
+
+def _static_route_from_row(row: sqlite3.Row) -> StaticRoute:
+    return StaticRoute(
+        id=int(row["id"]),
+        enabled=bool(row["enabled"]),
+        note=str(row["note"]),
+        dst_cidr=str(row["dst_cidr"]),
+        gateway_ip=str(row["gateway_ip"]),
+        egress_iface=str(row["egress_iface"]),
+        pref_src=str(row["pref_src"]),
+        install_scope=str(row["install_scope"]),
+        routing_mark=str(row["routing_mark"]),
+        table_id=int(row["table_id"]),
+        metric=int(row["metric"]),
+        cross_vrf=bool(row["cross_vrf"]),
+        nexthop_scope=str(row["nexthop_scope"]),
+        nexthop_mark=str(row["nexthop_mark"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _static_route_table_id(
+    *,
+    install_scope: Optional[str],
+    table_id: Optional[int],
+    routing_mark: Optional[str],
+) -> Optional[int]:
+    sc = (install_scope or "").strip().lower()
+    if sc != "table":
+        return None
+    if table_id is not None and int(table_id) > 0:
+        return int(table_id)
+    mark = (routing_mark or "").strip()
+    if mark.isdigit():
+        return int(mark)
+    return None
+
+
+def _validate_static_route_fields(
+    *,
+    dst_cidr: Optional[str] = None,
+    gateway_ip: Optional[str] = None,
+    egress_iface: Optional[str] = None,
+    pref_src: Optional[str] = None,
+    install_scope: Optional[str] = None,
+    routing_mark: Optional[str] = None,
+    table_id: Optional[int] = None,
+    cross_vrf: Optional[bool] = None,
+    nexthop_scope: Optional[str] = None,
+    nexthop_mark: Optional[str] = None,
+) -> None:
+    import ipaddress
+
+    if dst_cidr is not None:
+        s = dst_cidr.strip()
+        if not s:
+            raise ValueError("dst_cidr_required")
+        try:
+            ipaddress.ip_network(s, strict=False)
+        except ValueError as e:
+            raise ValueError(f"invalid_dst_cidr:{s}") from e
+    tid = _static_route_table_id(
+        install_scope=install_scope,
+        table_id=table_id,
+        routing_mark=routing_mark,
+    )
+    if gateway_ip is not None and gateway_ip.strip():
+        validate_ipv4(gateway_ip)
+        if tid == 2111:
+            raise ValueError(
+                "table_2111_return_route_use_dev_scope_link_not_via_gateway"
+            )
+    if pref_src is not None and pref_src.strip():
+        validate_ipv4(pref_src)
+    if install_scope is not None:
+        sc = install_scope.strip().lower()
+        if sc not in STATIC_INSTALL_SCOPES:
+            raise ValueError(f"invalid_install_scope:{sc}")
+    if routing_mark is not None and routing_mark.strip():
+        if install_scope == "vrf" or (install_scope is None):
+            try:
+                validate_vrf_name(routing_mark.strip())
+            except ValueError:
+                pass
+    if table_id is not None and table_id < 0:
+        raise ValueError("invalid_table_id")
+    if cross_vrf:
+        nh = (nexthop_scope or "").strip().lower()
+        if nh not in ("main", "table", "vrf"):
+            raise ValueError("cross_vrf_requires_nexthop_scope")
+        if not (nexthop_mark or "").strip() and nh in ("table", "vrf"):
+            raise ValueError("cross_vrf_requires_nexthop_mark")
+    if nexthop_scope is not None:
+        nh = nexthop_scope.strip().lower()
+        if nh and nh not in STATIC_NEXTHOP_SCOPES - {""}:
+            raise ValueError(f"invalid_nexthop_scope:{nh}")
+
+
+def list_static_routes(conn: sqlite3.Connection, enabled_only: bool = False) -> List[StaticRoute]:
+    q = "SELECT * FROM static_routes"
+    if enabled_only:
+        q += " WHERE enabled = 1"
+    q += " ORDER BY id"
+    return [_static_route_from_row(row) for row in conn.execute(q)]
+
+
+def get_static_route(conn: sqlite3.Connection, route_id: int) -> Optional[StaticRoute]:
+    row = conn.execute("SELECT * FROM static_routes WHERE id = ?", (route_id,)).fetchone()
+    if not row:
+        return None
+    return _static_route_from_row(row)
+
+
+def _normalize_static_route_dst(dst_cidr: str) -> str:
+    import ipaddress
+
+    return str(ipaddress.ip_network(dst_cidr.strip(), strict=False))
+
+
+def find_static_route_by_fib_key(
+    conn: sqlite3.Connection,
+    *,
+    dst_cidr: str,
+    gateway_ip: str = "",
+    egress_iface: str = "",
+    pref_src: str = "",
+    install_scope: str = "main",
+    routing_mark: str = "",
+    table_id: int = 0,
+    metric: int = 0,
+    cross_vrf: bool = False,
+    nexthop_scope: str = "",
+    nexthop_mark: str = "",
+) -> Optional[StaticRoute]:
+    """按 FIB 写入键查找已有条目（不含 note/enabled），用于 POST 幂等与防重复。"""
+    scope = (install_scope or "main").strip().lower()
+    dst_norm = _normalize_static_route_dst(dst_cidr)
+    row = conn.execute(
+        """
+        SELECT * FROM static_routes WHERE
+          dst_cidr = ? AND install_scope = ? AND routing_mark = ? AND table_id = ?
+          AND gateway_ip = ? AND egress_iface = ? AND pref_src = ?
+          AND metric = ? AND cross_vrf = ? AND nexthop_scope = ? AND nexthop_mark = ?
+        ORDER BY id ASC LIMIT 1
+        """,
+        (
+            dst_norm,
+            scope,
+            (routing_mark or "").strip(),
+            int(table_id),
+            (gateway_ip or "").strip(),
+            (egress_iface or "").strip(),
+            (pref_src or "").strip(),
+            int(metric),
+            1 if cross_vrf else 0,
+            (nexthop_scope or "").strip(),
+            (nexthop_mark or "").strip(),
+        ),
+    ).fetchone()
+    if not row:
+        # 兼容旧数据：目的未规范化存储时仍匹配
+        row = conn.execute(
+            """
+            SELECT * FROM static_routes WHERE
+              install_scope = ? AND routing_mark = ? AND table_id = ?
+              AND gateway_ip = ? AND egress_iface = ? AND pref_src = ?
+              AND metric = ? AND cross_vrf = ? AND nexthop_scope = ? AND nexthop_mark = ?
+              AND (dst_cidr = ? OR dst_cidr = ?)
+            ORDER BY id ASC LIMIT 1
+            """,
+            (
+                scope,
+                (routing_mark or "").strip(),
+                int(table_id),
+                (gateway_ip or "").strip(),
+                (egress_iface or "").strip(),
+                (pref_src or "").strip(),
+                int(metric),
+                1 if cross_vrf else 0,
+                (nexthop_scope or "").strip(),
+                (nexthop_mark or "").strip(),
+                dst_cidr.strip(),
+                dst_norm,
+            ),
+        ).fetchone()
+    if not row:
+        return None
+    return _static_route_from_row(row)
+
+
+def insert_static_route(
+    conn: sqlite3.Connection,
+    *,
+    enabled: bool = True,
+    note: str = "",
+    dst_cidr: str,
+    gateway_ip: str = "",
+    egress_iface: str = "",
+    pref_src: str = "",
+    install_scope: str = "main",
+    routing_mark: str = "",
+    table_id: int = 0,
+    metric: int = 0,
+    cross_vrf: bool = False,
+    nexthop_scope: str = "",
+    nexthop_mark: str = "",
+) -> int:
+    scope = (install_scope or "main").strip().lower()
+    _validate_static_route_fields(
+        dst_cidr=dst_cidr,
+        gateway_ip=gateway_ip,
+        egress_iface=egress_iface,
+        pref_src=pref_src,
+        install_scope=scope,
+        routing_mark=routing_mark,
+        table_id=table_id,
+        cross_vrf=cross_vrf,
+        nexthop_scope=nexthop_scope,
+        nexthop_mark=nexthop_mark,
+    )
+    if scope == "vrf" and not (routing_mark or "").strip():
+        raise ValueError("vrf_scope_requires_routing_mark")
+    if scope == "table" and table_id <= 0 and not (routing_mark or "").strip():
+        raise ValueError("table_scope_requires_table_id_or_mark")
+    dst_store = _normalize_static_route_dst(dst_cidr)
+    cur = conn.execute(
+        """
+        INSERT INTO static_routes (
+          enabled, note, dst_cidr, gateway_ip, egress_iface, pref_src,
+          install_scope, routing_mark, table_id, metric, cross_vrf,
+          nexthop_scope, nexthop_mark, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        """,
+        (
+            1 if enabled else 0,
+            note.strip(),
+            dst_store,
+            gateway_ip.strip(),
+            egress_iface.strip(),
+            pref_src.strip(),
+            scope,
+            routing_mark.strip(),
+            int(table_id),
+            int(metric),
+            1 if cross_vrf else 0,
+            nexthop_scope.strip(),
+            nexthop_mark.strip(),
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_static_route(
+    conn: sqlite3.Connection,
+    route_id: int,
+    *,
+    enabled: Optional[bool] = None,
+    note: Optional[str] = None,
+    dst_cidr: Optional[str] = None,
+    gateway_ip: Optional[str] = None,
+    egress_iface: Optional[str] = None,
+    pref_src: Optional[str] = None,
+    install_scope: Optional[str] = None,
+    routing_mark: Optional[str] = None,
+    table_id: Optional[int] = None,
+    metric: Optional[int] = None,
+    cross_vrf: Optional[bool] = None,
+    nexthop_scope: Optional[str] = None,
+    nexthop_mark: Optional[str] = None,
+) -> bool:
+    row = get_static_route(conn, route_id)
+    if not row:
+        return False
+    merged = {
+        "dst_cidr": dst_cidr if dst_cidr is not None else row.dst_cidr,
+        "gateway_ip": gateway_ip if gateway_ip is not None else row.gateway_ip,
+        "egress_iface": egress_iface if egress_iface is not None else row.egress_iface,
+        "pref_src": pref_src if pref_src is not None else row.pref_src,
+        "install_scope": install_scope if install_scope is not None else row.install_scope,
+        "routing_mark": routing_mark if routing_mark is not None else row.routing_mark,
+        "table_id": table_id if table_id is not None else row.table_id,
+        "cross_vrf": cross_vrf if cross_vrf is not None else row.cross_vrf,
+        "nexthop_scope": nexthop_scope if nexthop_scope is not None else row.nexthop_scope,
+        "nexthop_mark": nexthop_mark if nexthop_mark is not None else row.nexthop_mark,
+    }
+    _validate_static_route_fields(**merged)
+    updates = []
+    params: list = []
+    fields = {
+        "enabled": enabled,
+        "note": note,
+        "dst_cidr": dst_cidr,
+        "gateway_ip": gateway_ip,
+        "egress_iface": egress_iface,
+        "pref_src": pref_src,
+        "install_scope": install_scope,
+        "routing_mark": routing_mark,
+        "table_id": table_id,
+        "metric": metric,
+        "cross_vrf": cross_vrf,
+        "nexthop_scope": nexthop_scope,
+        "nexthop_mark": nexthop_mark,
+    }
+    for key, val in fields.items():
+        if val is None:
+            continue
+        if key == "enabled":
+            updates.append("enabled = ?")
+            params.append(1 if val else 0)
+        elif key == "cross_vrf":
+            updates.append("cross_vrf = ?")
+            params.append(1 if val else 0)
+        elif key == "install_scope":
+            updates.append("install_scope = ?")
+            params.append(str(val).strip().lower())
+        elif key in ("table_id", "metric"):
+            updates.append(f"{key} = ?")
+            params.append(int(val))
+        else:
+            updates.append(f"{key} = ?")
+            params.append(str(val).strip())
+    if not updates:
+        return True
+    updates.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    params.append(route_id)
+    conn.execute(f"UPDATE static_routes SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    return True
+
+
+def delete_static_route(conn: sqlite3.Connection, route_id: int) -> bool:
+    conn.execute("DELETE FROM static_routes WHERE id = ?", (route_id,))
+    conn.commit()
+    return conn.execute("SELECT 1 FROM static_routes WHERE id = ?", (route_id,)).fetchone() is None
 
 
 # === Gateway Reply Settings ===
@@ -1110,19 +1500,15 @@ def list_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str) -> List[BgpNeighb
 def bgp_neighbor_meta_role_map_from_env() -> Dict[str, str]:
     """
     从环境变量 ``MTR_BGP_ROLE_MAP`` 读取邻居角色映射，格式：
-    ``10.133.153.204:upstream,10.133.151.204:downstream``
+    ``139.159.43.249:rr,139.159.43.208:downstream``
 
-    未设置时使用实验室默认：ROS(153.204) 上游；Linux 下游 151.204 / 152.204 / 152.205。
+    未设置时仅保留现网常用 IP 提示；实验室 10.133.x 须由环境变量或 BGP 管理页配置。
     """
     raw = (os.environ.get("MTR_BGP_ROLE_MAP") or "").strip()
     if not raw:
         raw = (
             "139.159.43.249:rr,"
-            "139.159.43.208:downstream,"
-            "10.133.153.204:upstream,"
-            "10.133.151.204:downstream,"
-            "10.133.152.204:downstream,"
-            "10.133.152.205:downstream"
+            "139.159.43.208:downstream"
         )
     out: Dict[str, str] = {}
     for part in raw.split(","):
@@ -1164,18 +1550,12 @@ def ensure_bgp_neighbor_meta_row(conn: sqlite3.Connection, vrf: str, neighbor_ip
 def parse_bgp_db_presets_from_env() -> List[tuple[str, str, str]]:
     """
     ``MTR_BGP_DB_PRESETS``：``vrf:neighbor_ip:role`` 逗号分隔。
-    未设置时使用实验室默认（vrf2103 上游 ROS；default/vrf2102 下游 Linux 201）。
+    未设置时不写入任何预设（由 OP「BGP 管理」或 ``MTR_BGP_DB_PRESETS`` 显式配置）。
     """
     raw = (os.environ.get("MTR_BGP_DB_PRESETS") or "").strip()
-    if not raw:
-        # RR 不在此预设：须由 OP「BGP 管理」手工创建（角色 RR）
-        raw = (
-            "gobgp-tx:139.159.43.208:downstream,"
-            "vrf2103:10.133.153.204:upstream,"
-            "default:10.133.152.204:downstream,"
-            "vrf2102:10.133.152.204:downstream"
-        )
     out: List[tuple[str, str, str]] = []
+    if not raw:
+        return out
     for part in raw.split(","):
         part = part.strip()
         if not part or part.count(":") < 2:

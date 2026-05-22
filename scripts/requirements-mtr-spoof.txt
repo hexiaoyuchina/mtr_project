@@ -1,3 +1,0 @@
-# 仅在 Linux 200 上运行 mtr_spoof_nfqueue.py 时需要（apt 同名包亦可）
-scapy>=2.5.0
-NetfilterQueue>=1.1.0

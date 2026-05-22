@@ -1,7 +1,8 @@
 # BGP 建立
 
 > **历史实验室文档**（`10.133.152.*` / Linux 200–201）。  
-> **现网**：`101.89.68.109`、`LOCAL_AS=63199`、`RR=139.159.43.249`、`下游=139.159.43.208` — 见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)。
+> **现网**：`101.89.68.109`、`LOCAL_AS=63199`、`RR=139.159.43.249`、`下游=139.159.43.208` — 见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)、[BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)。  
+> **现网卫星策略（ip rule + 对端连 :179 的 nft DNAT）**：[BGP_SATELLITE_IP_RULE_AND_DNAT.md](./BGP_SATELLITE_IP_RULE_AND_DNAT.md)（GoBGP RX/TX 分端口，与下文 FRR 实验室叙述不同）。
 
 ## 目标效果
 

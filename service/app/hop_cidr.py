@@ -1,4 +1,4 @@
-"""OP `match_cidr` 与 `mtr_spoof_nfqueue._match_cidr_span` 一致。
+"""OP `match_cidr` 与 `te_rewrite_nfqueue` 展开语义一致。
 
 写成「起始 IPv4 + /前缀」时，表示从该起始地址起连续 ``2^(32-pl)`` 个地址，
 **不做 RFC 强行对齐**（与 ``ip_network(..., strict=False)`` 不同）。

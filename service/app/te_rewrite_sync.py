@@ -1,6 +1,6 @@
-"""hop_replace_rules 变更后：重写 /tmp/mtr_te_map.env 并重启 te_rewrite_nfqueue.py。
+"""hop_replace_rules 变更后：原子写 /tmp/mtr_te_map.env，优先 SIGHUP 热加载（不 pkill）。
 
-实验室路径：脚本与 uvicorn 同部署根目录（…/te_rewrite_nfqueue.py）。
+仅总开关切换/启动时做 iptables 全量整理；日常增删改规则尽量缩短 NFQUEUE 空窗。
 可通过 MTR_TE_REWRITE_SKIP_SYNC=1 关闭；MTR_TE_REWRITE_SCRIPT 覆盖脚本路径。
 """
 from __future__ import annotations
@@ -9,9 +9,11 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import storage
@@ -130,7 +132,7 @@ def _python_for_te_daemon() -> str:
 
 
 def build_rewrite_map_line(conn: sqlite3.Connection) -> str:
-    """按 hop 规则生成 TE 改写映射；网段按与 mtr_spoof 相同的「起始 IP + 前缀」展开为多个 host。"""
+    """按 hop 规则生成 TE 改写映射；网段按「起始 IP + 前缀」连续展开为多个 host。"""
     max_expand = int(os.environ.get("MTR_TE_REWRITE_MAX_EXPAND", "4096"))
     seen: set[str] = set()
     parts: list[str] = []
@@ -158,9 +160,118 @@ def build_rewrite_map_line(conn: sqlite3.Connection) -> str:
 
 
 def write_te_map_env(line: str) -> None:
+    """原子写入，供守护进程 SIGHUP 与启动时读取。"""
     TE_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with TE_MAP_FILE.open("w", encoding="ascii", errors="replace") as f:
-        f.write("export MTR_TE_REWRITE_MAP=" + repr(line) + "\n")
+    tmp = TE_MAP_FILE.with_name(TE_MAP_FILE.name + ".tmp")
+    content = "export MTR_TE_REWRITE_MAP=" + repr(line) + "\n"
+    tmp.write_text(content, encoding="ascii", errors="replace")
+    tmp.replace(TE_MAP_FILE)
+
+
+def _te_daemon_pids() -> list[int]:
+    r = subprocess.run(
+        ["pgrep", "-f", "te_rewrite_nfqueue.py"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        return []
+    out: list[int] = []
+    for part in (r.stdout or "").split():
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out
+
+
+def _nfqueue_has_listener(queue_num: str | None = None) -> bool:
+    """内核已登记 NFQUEUE 监听（/proc/net/netfilter/nfnetlink_queue 非空且含队列号）。"""
+    q = (queue_num or TE_QUEUE_NUM).strip()
+    p = Path("/proc/net/netfilter/nfnetlink_queue")
+    try:
+        raw = p.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    if not raw.strip():
+        return False
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == q:
+            try:
+                return int(parts[1]) > 0
+            except ValueError:
+                return True
+    return True
+
+
+def _wait_te_daemon_bound(timeout_sec: float = 45.0) -> bool:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if _nfqueue_has_listener():
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def _stop_te_rewrite_force() -> None:
+    subprocess.run(
+        ["pkill", "-9", "-f", "te_rewrite_nfqueue.py"],
+        capture_output=True,
+        text=True,
+    )
+    time.sleep(0.25)
+
+
+def _sighup_reload_reflected_in_log(map_line: str) -> bool:
+    """确认最近一次 reload 日志含 map 中首个 forged（防旧 env 盖住文件）。"""
+    probe = (map_line or "").strip()
+    if not probe:
+        return True
+    first = probe.split(",", 1)[0].strip()
+    if "=" not in first:
+        return True
+    forged = first.split("=", 1)[1].strip()
+    if not forged:
+        return True
+    try:
+        text = TE_LOG_FILE.read_text(encoding="utf-8", errors="replace")[-4000:]
+    except OSError:
+        return True
+    if "reload rules=" not in text:
+        return False
+    last = text.rsplit("reload rules=", 1)[-1].split("\n", 1)[0]
+    return forged in last
+
+
+def reload_te_rewrite_daemon(map_line: str = "") -> bool:
+    """向运行中守护进程发 SIGHUP，从 MTR_TE_REWRITE_MAP_FILE 热加载。
+
+    若进程不支持 SIGHUP、reload 未反映到日志、或进程退出，返回 False 以便走冷启动。
+    """
+    pids = _te_daemon_pids()
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGHUP)
+        except ProcessLookupError:
+            continue
+        except OSError as e:
+            logger.warning("te_rewrite SIGHUP pid=%s: %s", pid, e)
+    time.sleep(0.15)
+    alive = _te_daemon_pids()
+    if not alive:
+        logger.warning("te_rewrite_sync: SIGHUP后无存活进程，将冷启动")
+        return False
+    if not _sighup_reload_reflected_in_log(map_line):
+        logger.warning(
+            "te_rewrite_sync: SIGHUP 后日志未含期望 forged=%s，将冷启动",
+            (map_line or "").split(",", 1)[0],
+        )
+        return False
+    logger.info("te_rewrite_sync: SIGHUP reload ok pids=%s", alive)
+    return True
 
 
 def _iptables_del_rule(argv: list[str]) -> None:
@@ -174,28 +285,56 @@ def clear_iptables_nfqueue() -> None:
 
 
 def _iptables_nfqueue_remove_chain(chain: str, specs: list[list[str]]) -> None:
-    base_rm = [
-        "iptables",
-        "-t",
-        "mangle",
-        "-D",
-        chain,
-        "-p",
-        "icmp",
-        "-m",
-        "icmp",
-        "--icmp-type",
-        "time-exceeded",
-    ]
-    for spec in specs:
-        for _ in range(8):
-            r = subprocess.run(
-                base_rm + spec + ["-j", "NFQUEUE", "--queue-num", TE_QUEUE_NUM],
-                capture_output=True,
-                text=True,
-            )
-            if r.returncode != 0:
-                break
+    """删除须与安装一致用 icmp type 11；并尝试 time-exceeded 以清历史残留。"""
+    for icmp_t in ("11", "time-exceeded"):
+        base_rm = [
+            "iptables",
+            "-t",
+            "mangle",
+            "-D",
+            chain,
+            "-p",
+            "icmp",
+            "-m",
+            "icmp",
+            "--icmp-type",
+            icmp_t,
+        ]
+        for spec in specs:
+            for _ in range(8):
+                r = subprocess.run(
+                    base_rm + spec + ["-j", "NFQUEUE", "--queue-num", TE_QUEUE_NUM],
+                    capture_output=True,
+                    text=True,
+                )
+                if r.returncode != 0:
+                    break
+
+
+def _iptables_nfqueue_present(chain: str, spec: list[str]) -> bool:
+    r = subprocess.run(
+        [
+            "iptables",
+            "-t",
+            "mangle",
+            "-C",
+            chain,
+            "-p",
+            "icmp",
+            "-m",
+            "icmp",
+            "--icmp-type",
+            "11",
+            *spec,
+            "-j",
+            "NFQUEUE",
+            "--queue-num",
+            TE_QUEUE_NUM,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0
 
 
 def _iptables_nfqueue_install_chain(chain: str, specs: list[list[str]]) -> None:
@@ -212,7 +351,7 @@ def _iptables_nfqueue_install_chain(chain: str, specs: list[list[str]]) -> None:
             "-m",
             "icmp",
             "--icmp-type",
-            "time-exceeded",
+            "11",
             *spec,
             "-j",
             "NFQUEUE",
@@ -229,19 +368,33 @@ def _iptables_nfqueue_install_chain(chain: str, specs: list[list[str]]) -> None:
             )
 
 
-def ensure_iptables_nfqueue() -> None:
-    """mangle FORWARD/OUTPUT：转发与本机发出的 ICMP TE 进 NFQUEUE。"""
-    _iptables_nfqueue_remove_chain("FORWARD", _nfqueue_forward_specs_all_for_removal())
-    _iptables_nfqueue_remove_chain("OUTPUT", _nfqueue_oif_specs_for_removal())
-    _iptables_nfqueue_install_chain("FORWARD", _nfqueue_forward_specs_active())
+def ensure_iptables_nfqueue(*, flush_legacy: bool = False) -> None:
+    """mangle FORWARD/OUTPUT：ICMP TE 进 NFQUEUE。flush_legacy 仅启动/总开关时清旧口残留。"""
+    if flush_legacy:
+        _iptables_nfqueue_remove_chain("FORWARD", _nfqueue_forward_specs_all_for_removal())
+        _iptables_nfqueue_remove_chain("OUTPUT", _nfqueue_oif_specs_for_removal())
+    missing_fwd = [
+        s
+        for s in _nfqueue_forward_specs_active()
+        if not _iptables_nfqueue_present("FORWARD", s)
+    ]
+    if missing_fwd:
+        _iptables_nfqueue_install_chain("FORWARD", missing_fwd)
     if _te_rewrite_output_enabled():
-        _iptables_nfqueue_install_chain("OUTPUT", _nfqueue_output_specs_active())
+        missing_out = [
+            s
+            for s in _nfqueue_output_specs_active()
+            if not _iptables_nfqueue_present("OUTPUT", s)
+        ]
+        if missing_out:
+            _iptables_nfqueue_install_chain("OUTPUT", missing_out)
     logger.info(
-        "iptables mangle NFQUEUE: forward oif=%s iif=%s output=%s queue=%s",
+        "iptables mangle NFQUEUE: forward oif=%s iif=%s output=%s queue=%s flush_legacy=%s",
         _downstream_iface(),
         _uplink_iface(),
         _te_rewrite_output_enabled(),
         TE_QUEUE_NUM,
+        flush_legacy,
     )
 
 
@@ -397,35 +550,94 @@ def ensure_probe_return_via_200() -> None:
         )
 
 
-def restart_te_rewrite_daemon(map_line: str) -> None:
+def start_te_rewrite_daemon(map_line: str) -> None:
+    """冷启动 te_rewrite；失败则拆除 NFQUEUE，避免 TE 被丢导致 mtr 超时。"""
+    _stop_te_rewrite_force()
     script = _script_path()
-    subprocess.run(["pkill", "-f", "te_rewrite_nfqueue.py"], capture_output=True, text=True)
     env = os.environ.copy()
     env["MTR_TE_REWRITE_MAP"] = map_line
+    env["MTR_TE_REWRITE_MAP_FILE"] = str(TE_MAP_FILE)
     env["MTR_TE_QUEUE_NUM"] = TE_QUEUE_NUM
     TE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     py_exe = _python_for_te_daemon()
-    exe = shlex.quote(py_exe)
-    sp = shlex.quote(str(script))
-    lg = shlex.quote(str(TE_LOG_FILE))
-    bash_cmd = f"nohup {exe} {sp} >> {lg} 2>&1 &"
-    logger.info("te_rewrite_sync: restart daemon python=%s script=%s", py_exe, script)
+    logger.info("te_rewrite_sync: start daemon python=%s script=%s", py_exe, script)
     try:
-        subprocess.run(["bash", "-c", bash_cmd], env=env, timeout=15)
+        with TE_LOG_FILE.open("a", encoding="utf-8", errors="replace") as logf:
+            subprocess.Popen(
+                [py_exe, str(script)],
+                env=env,
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
     except OSError as e:
         logger.warning("te_rewrite_nfqueue start failed: %s", e)
-
-
-def sync_te_rewrite_from_conn(conn: sqlite3.Connection) -> None:
-    if os.environ.get("MTR_TE_REWRITE_SKIP_SYNC", "").strip().lower() in {"1", "true", "yes"}:
         return
-    # 每次同步先清实验室旧口残留（即使 hijack 关闭也执行）
-    _iptables_nfqueue_remove_chain("FORWARD", _nfqueue_forward_specs_all_for_removal())
-    _iptables_nfqueue_remove_chain("OUTPUT", _nfqueue_oif_specs_for_removal())
+    if not _wait_te_daemon_bound(90.0):
+        tail = ""
+        try:
+            tail = TE_LOG_FILE.read_text(encoding="utf-8", errors="replace")[-800:]
+        except OSError:
+            pass
+        logger.error(
+            "te_rewrite_nfqueue did not bind NFQUEUE queue=%s within 45s; "
+            "clearing iptables NFQUEUE (TE pass-through in kernel). log_tail=%s",
+            TE_QUEUE_NUM,
+            tail,
+        )
+        _stop_te_rewrite_force()
+        clear_iptables_nfqueue()
+
+
+def _apply_te_rewrite_runtime(
+    *,
+    line: str,
+    hijack_enabled: bool,
+    flush_iptables_legacy: bool,
+) -> None:
     script = _script_path()
     if not script.is_file():
         logger.debug("te_rewrite_sync: skip (no script %s)", script)
         return
+    write_te_map_env(line)
+    if hijack_enabled:
+        # 须先 bind NFQUEUE 再装 iptables，否则 TE 进无人队列会被内核丢弃（mtr 全 timeout）。
+        clear_iptables_nfqueue()
+        start_te_rewrite_daemon(line)
+        if _nfqueue_has_listener():
+            ensure_iptables_nfqueue(flush_legacy=flush_iptables_legacy)
+        else:
+            logger.error(
+                "te_rewrite_sync: NFQUEUE not bound; iptables left clear (TE pass-through)"
+            )
+    else:
+        clear_iptables_nfqueue()
+        subprocess.run(
+            ["pkill", "-f", "te_rewrite_nfqueue.py"],
+            capture_output=True,
+            text=True,
+        )
+
+
+def _kill_legacy_mtr_spoof() -> None:
+    """移除已废弃的路径 B（Echo→NFQUEUE 合成 TE），避免与 te_rewrite 抢同一队列。"""
+    subprocess.run(
+        ["pkill", "-f", "mtr_spoof_nfqueue"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def sync_te_rewrite_from_conn(
+    conn: sqlite3.Connection,
+    *,
+    flush_iptables_legacy: bool = False,
+) -> None:
+    """日常 hop 规则变更：默认 SIGHUP 热加载（不 pkill）；lifespan / 总开关才冷启动。"""
+    if os.environ.get("MTR_TE_REWRITE_SKIP_SYNC", "").strip().lower() in {"1", "true", "yes"}:
+        return
+    _kill_legacy_mtr_spoof()
+    script = _script_path()
     try:
         subprocess.run(["modprobe", "nfnetlink_queue"], capture_output=True, text=True)
     except OSError:
@@ -436,26 +648,41 @@ def sync_te_rewrite_from_conn(conn: sqlite3.Connection) -> None:
         logger.info(
             "te_rewrite_sync: hijack_enabled=false, TE map cleared (iptables NFQUEUE pass-through)"
         )
+        _apply_te_rewrite_runtime(
+            line=line,
+            hijack_enabled=False,
+            flush_iptables_legacy=flush_iptables_legacy,
+        )
     else:
         line = build_rewrite_map_line(conn)
-    write_te_map_env(line)
-    if g.hijack_enabled and line:
-        ensure_iptables_nfqueue()
-        restart_te_rewrite_daemon(line)
-    else:
-        clear_iptables_nfqueue()
-        subprocess.run(
-            ["pkill", "-f", "te_rewrite_nfqueue.py"],
-            capture_output=True,
-            text=True,
-        )
+        write_te_map_env(line)
+        if not flush_iptables_legacy and reload_te_rewrite_daemon(line):
+            if _nfqueue_has_listener():
+                ensure_iptables_nfqueue(flush_legacy=False)
+                logger.info("te_rewrite_sync: hot reload only (no pkill), map_len=%s", len(line))
+            else:
+                logger.warning("te_rewrite_sync: SIGHUP ok but queue unbound; cold start")
+                _apply_te_rewrite_runtime(
+                    line=line,
+                    hijack_enabled=True,
+                    flush_iptables_legacy=False,
+                )
+        else:
+            if not flush_iptables_legacy:
+                logger.info("te_rewrite_sync: hot reload unavailable; cold start")
+            _apply_te_rewrite_runtime(
+                line=line,
+                hijack_enabled=True,
+                flush_iptables_legacy=flush_iptables_legacy,
+            )
     ensure_probe_return_via_200()
     try:
         sync_te_rewrite_peers(line, local_script=script)
     except Exception:
         logger.exception("te_rewrite_peer_sync failed")
     logger.info(
-        "te_rewrite_sync: map_len=%s (empty=pass-through TE) script=%s",
+        "te_rewrite_sync: map_len=%s hot=%s script=%s",
         len(line),
+        not flush_iptables_legacy,
         script,
     )

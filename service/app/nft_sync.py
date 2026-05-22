@@ -1,4 +1,4 @@
-"""nftables：劫持总开关开启时，下发「ICMP TE → SNAT」风格的 nft 规则（table ip mtr_te_snat）。
+"""nftables：hijack_enabled 开启时，按 hop 规则写入 table ip mtr_te_snat 占位 SNAT（table inet mtr_te 为空滤镜占位）。
 
 注意（实验室实测）：Linux 5.4 + VRF 下，**转发的 ICMP Time Exceeded 通常不进 nat POSTROUTING**，
 nft 计数恒为 0；真实改写由 **iptables mangle FORWARD → NFQUEUE** + **`te_rewrite_nfqueue.py`**
@@ -32,9 +32,10 @@ def load_table_from_file(nft_file: Path) -> None:
 
 
 def ensure_table(nft_file: Path) -> None:
-    """加载 inet mtr_spoof + ip mtr_te_snat；兼容旧版 inet mtr_te_snat，先删后载。"""
+    """加载 inet mtr_te + ip mtr_te_snat；兼容旧表名，先删后载。"""
     for fam, name in (
         ("inet", "mtr_spoof"),
+        ("inet", "mtr_te"),
         ("inet", "mtr_te_snat"),
         ("ip", "mtr_te_snat"),
     ):
@@ -107,7 +108,7 @@ def _extra_match_trials() -> list[list[str]]:
 def add_te_snat_rules(hop_rules: list[dict[str, Any]]) -> None:
     """按数据库顺序（priority DESC）追加 SNAT 规则（table ip）。
 
-    match_cidr 与 mtr_spoof / te_rewrite 一致：「起始 IPv4 + /前缀」表示连续地址段；
+    match_cidr 与 te_rewrite 一致：「起始 IPv4 + /前缀」表示连续地址段；
     段内地址展开为多条 ``ip saddr <host>``（上限见 MTR_NFT_TE_SNAT_EXPAND_PER_RULE），
     过大则退回 RFC 对齐单条前缀。
     """
@@ -183,6 +184,44 @@ def add_te_snat_rules(hop_rules: list[dict[str, Any]]) -> None:
 
             n += 1
     logger.info("nft TE SNAT: installed %s rules", n)
+
+
+def _ensure_inet_mtr_te_table(nft_file: Path) -> None:
+    code, _, _ = _nft(["list", "table", "inet", "mtr_te"])
+    if code == 0:
+        return
+    if not nft_file.is_file():
+        raise FileNotFoundError(nft_file)
+    load_table_from_file(nft_file)
+
+
+def _ensure_ip_te_snat_table(nft_file: Path) -> None:
+    code, _, _ = _nft(["list", "table", "ip", "mtr_te_snat"])
+    if code == 0:
+        return
+    if not nft_file.is_file():
+        raise FileNotFoundError(nft_file)
+    load_table_from_file(nft_file)
+
+
+def sync_te_snat_only(
+    *,
+    nft_file: Path,
+    hijack_enabled: bool,
+    hop_rules: list[dict[str, Any]] | None = None,
+) -> None:
+    """仅刷新 ip mtr_te_snat postrouting，不 delete inet mtr_te（缩短 hop 规则变更影响）。"""
+    _ensure_inet_mtr_te_table(nft_file)
+    _ensure_ip_te_snat_table(nft_file)
+    _nft(["flush", "chain", "ip", "mtr_te_snat", "postrouting"])
+    if not hijack_enabled:
+        logger.info("nft TE SNAT cleared (hijack off)")
+        return
+    add_te_snat_rules(list(hop_rules or []))
+    logger.info(
+        "nft TE SNAT only: %s enabled rules",
+        len(hop_rules or []),
+    )
 
 
 def sync_nft(

@@ -61,7 +61,7 @@ cd "$REMOTE"
 if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi
 
 echo '=== processes before ==='
-pgrep -af 'bgp_agent|uvicorn app.main|mtr_spoof|arp_spoof' || true
+pgrep -af 'bgp_agent|uvicorn app.main|te_rewrite|arp_spoof' || true
 
 for svc in bgp-agent; do
   systemctl is-active "$svc" 2>/dev/null || systemctl start "$svc" 2>/dev/null || true
@@ -75,12 +75,7 @@ pgrep -f 'uvicorn app.main:app' >/dev/null || {{
   sleep 4
 }}
 
-pgrep -f mtr_spoof_nfqueue >/dev/null || {{
-  pkill -f mtr_spoof_nfqueue 2>/dev/null || true
-  : > /tmp/mtr_spoof_nfqueue.log
-  nohup $PY mtr_spoof_nfqueue.py --op-db "$REMOTE/data.db" --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
-  sleep 2
-}}
+pkill -f mtr_spoof_nfqueue 2>/dev/null || true
 
 pkill -f arp_spoof_daemon.py 2>/dev/null || true
 sleep 1
@@ -89,7 +84,7 @@ nohup $PY scripts/arp_spoof_daemon.py --op-db "$REMOTE/data.db" --verbose >> /tm
 sleep 3
 
 echo '=== processes after ==='
-pgrep -af 'bgp_agent|uvicorn app.main|mtr_spoof|arp_spoof' || true
+pgrep -af 'bgp_agent|uvicorn app.main|te_rewrite|arp_spoof' || true
 echo '=== arp log ==='
 tail -15 /tmp/arp_spoof_daemon.log 2>/dev/null || true
 curl -sf http://127.0.0.1:9179/health && echo ' agent_ok'

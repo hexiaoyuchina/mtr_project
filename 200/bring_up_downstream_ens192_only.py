@@ -144,8 +144,6 @@ curl -sf -X POST http://127.0.0.1:9179/api/neighbors/toggle \\
   -H 'Content-Type: application/json' -d '{{"address":"{PEER}","vrf":"{VRF}","enabled":true}}'
 
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
-sleep 1
-cd {remote} && nohup ./venv/bin/python3 mtr_spoof_nfqueue.py --op-db {remote}/data.db >>/tmp/mtr_spoof_nfqueue.log 2>&1 &
 
 echo '--- nft dnat ---'
 nft list chain inet mtr_bgp_sat_dnat prerouting 2>/dev/null | grep -E '153.204|ens192' || true

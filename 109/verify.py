@@ -97,6 +97,11 @@ echo '--- op ---'
 curl -s http://127.0.0.1:8808/health && echo
 curl -s http://127.0.0.1:8808/api/gobgp/status | head -c 600
 echo
+echo '--- static routes api ---'
+curl -s http://127.0.0.1:8808/api/static-routes/scopes | head -c 400
+echo
+curl -s 'http://127.0.0.1:8808/api/static-routes?reconcile=0' | head -c 400
+echo
 echo '--- bgp tcp ---'
 ss -tnp state established 2>/dev/null | grep -E ':179' || true
 echo '--- reachability (optional) ---'
@@ -122,6 +127,12 @@ ping -c1 -W2 {downstream} 2>/dev/null || true
 
     all_ok &= check("9179 health", "9179/health" in out or '"ok"' in out.lower())
     all_ok &= check("8808 health", '"status":"ok"' in out.replace(" ", "").lower() or "8808/health" in out)
+    all_ok &= check(
+        "static-routes API",
+        "static routes api" in out.lower()
+        or '"vrfs"' in out
+        or "/api/static-routes" in out,
+    )
     all_ok &= check(
         "bgp-agent running",
         "bgp_agent" in out or "active" in out.lower(),

@@ -1,10 +1,14 @@
 """bgp-agent 按 peer 百万级 RIB（Redis/RocksDB）OP 侧封装。"""
 from __future__ import annotations
 
+import ipaddress
+import logging
 import os
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from . import bgp_control, storage
+
+logger = logging.getLogger(__name__)
 
 
 def _ingest_timeout() -> float:
@@ -54,6 +58,89 @@ def count_peer_rib_routes(vrf: str, neighbor_ip: str, role: str) -> int:
         )
         r.raise_for_status()
         return int((r.json() or {}).get("count") or 0)
+
+
+def _prefix_exact_equal(a: str, b: str) -> bool:
+    try:
+        return ipaddress.ip_network(a.strip(), strict=False) == ipaddress.ip_network(
+            b.strip(), strict=False
+        )
+    except ValueError:
+        return a.strip() == b.strip()
+
+
+def _scan_peer_rib_route_exact(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    prefix: str,
+) -> Optional[Dict[str, Any]]:
+    """旧版 Agent 无 prefix 参数时，分页扫描直至命中或扫完。"""
+    pfx = prefix.strip()
+    if not pfx:
+        return None
+    max_pages = int(os.environ.get("MTR_BGP_PREFIX_SCAN_MAX_PAGES", "0") or "0")
+    page_size = min(5000, max(500, int(os.environ.get("MTR_BGP_PREFIX_SCAN_PAGE_SIZE", "2000"))))
+    page = 1
+    while True:
+        data = list_peer_rib_routes_page(vrf, neighbor_ip, role, page=page, page_size=page_size)
+        for item in data.get("routes") or []:
+            if _prefix_exact_equal(str(item.get("prefix") or ""), pfx):
+                return dict(item)
+        total = int(data.get("total") or 0)
+        if page * page_size >= total:
+            break
+        if max_pages > 0 and page >= max_pages:
+            logger.warning(
+                "prefix scan truncated vrf=%s neighbor=%s prefix=%s pages=%s",
+                vrf,
+                neighbor_ip,
+                pfx,
+                page,
+            )
+            break
+        page += 1
+    return None
+
+
+def get_peer_rib_route(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    prefix: str,
+) -> Optional[Dict[str, Any]]:
+    """按前缀精确查询；新 Agent 走 Redis O(1)，旧 Agent 回退分页扫描。"""
+    bgp_control.require_agent()
+    window = peer_route_window(role)
+    pfx = prefix.strip()
+    if not pfx:
+        return None
+    with bgp_control._client() as c:
+        r = c.get(
+            "/api/rib/routes",
+            params={
+                "window": window,
+                "vrf": storage.validate_vrf_name(vrf),
+                "neighbor_ip": storage.validate_ipv4(neighbor_ip),
+                "prefix": pfx,
+            },
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        data = r.json() or {}
+    routes = list(data.get("routes") or [])
+    resp_pfx = (data.get("prefix") or "").strip()
+    # 新 Agent 会在响应里回显规范化后的 prefix
+    if resp_pfx and _prefix_exact_equal(resp_pfx, pfx):
+        for item in routes:
+            if _prefix_exact_equal(str(item.get("prefix") or ""), pfx):
+                return dict(item)
+        return None
+    # 旧 Agent 忽略 prefix，勿误用分页首条
+    for item in routes:
+        if _prefix_exact_equal(str(item.get("prefix") or ""), pfx):
+            return dict(item)
+    return _scan_peer_rib_route_exact(vrf, neighbor_ip, role, pfx)
 
 
 def list_peer_rib_routes_page(

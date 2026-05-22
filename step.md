@@ -408,7 +408,7 @@ ip vrf exec vrf2103 ping -c 3 10.133.153.204
 
 ## 十、ICMP MTR 拦截与按跳替换
 
-用途：Linux 200 上通过 nftables + NFQUEUE + OP 规则对 ICMP Echo（ping/mtr 探测）做按跳替换。Linux 201 在业务源地址上经 BGP/`default-originate` 或策略路由把探测流量送到 `10.133.152.200` 时，才会进入本机劫持链。
+用途：Linux 200 上通过 **iptables mangle + NFQUEUE** + OP **`hop_replace_rules`** 对转发的 **ICMP Time Exceeded** 做 **外层源 IP** 逐跳替换（`te_rewrite_nfqueue`，路径 A）。Linux 201 在业务源地址上经 BGP/`default-originate` 或策略路由把探测流量送到 `10.133.152.200` 时，才会进入本机改写链。现网 109 见 `docs/MTR_TE_REWRITE.md`、`docs/MTR_DOWNSTREAM_TRANSIT_109.md`。
 
 ```bash
 # Linux 200
@@ -419,17 +419,10 @@ sudo apt install python3-scapy python3-netfilterqueue nftables python3-dev gcc l
 curl -sS -X PUT http://127.0.0.1:8808/api/global \
   -H 'Content-Type: application/json' -d '{"hijack_enabled":true}'
 
-# 当前验证方式：本机在 vrf2103 探测真实公网路径，前缀补上 201->200 与 veth 两跳。
-pkill -f /root/mtr_op/mtr_spoof_nfqueue.py 2>/dev/null || true
-nohup python3 /root/mtr_op/mtr_spoof_nfqueue.py \
-  --op-db /root/mtr_op/data.db \
-  --probe-local-vrf-exec 'ip vrf exec vrf2103' \
-  --prefix-hop-ips '10.133.152.200,10.255.210.2' \
-  --probe-mtr-count 3 \
-  --probe-mtr-extra '-4 -m 32' \
-  --probe-min-hops 2 \
-  --probe-timeout 90 \
-  --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
+# TE 改写（路径 A）：由 OP hijack_enabled + te_rewrite_sync 拉起 te_rewrite_nfqueue（勿再运行 mtr_spoof_nfqueue）。
+pkill -f mtr_spoof_nfqueue 2>/dev/null || true
+export MTR_TE_REWRITE_SCRIPT=/root/mtr_op/te_rewrite_nfqueue.py
+# 规则见 /api/hop-rules；映射 /tmp/mtr_te_map.env
 ```
 
 当前 OP 逐跳替换规则：
@@ -447,9 +440,9 @@ vtysh -c 'show ip route bgp'
 mtr -r -n -c 3 -i 1 -a 10.133.152.204 -I ens192 1.1.1.1
 
 # Linux 200
-nft list chain inet mtr_spoof prerouting
-pgrep -af mtr_spoof_nfqueue
-grep -E 'TE ttl=[1-4] ' /tmp/mtr_spoof_nfqueue.log | tail -n 20
+iptables -t mangle -S FORWARD | grep -i time-exceeded
+pgrep -af te_rewrite_nfqueue
+tail -20 /tmp/te_rewrite_nfqueue.log
 ```
 
 当前验证输出摘要：
@@ -475,7 +468,8 @@ MTR（目的 1.1.1.1，源 10.133.152.204）：
 ```bash
 # Linux 200
 systemctl stop frr 2>/dev/null || true
-pkill -f /root/mtr_op/mtr_spoof_nfqueue.py 2>/dev/null || true
+pkill -f mtr_spoof_nfqueue 2>/dev/null || true
+pkill -f te_rewrite_nfqueue 2>/dev/null || true
 ip link del vrftrans2102 2>/dev/null || true
 ip link del ens224.2103 2>/dev/null || true
 ip link del ens256.2103 2>/dev/null || true

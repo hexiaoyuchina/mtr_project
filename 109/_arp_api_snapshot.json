@@ -1,0 +1,615 @@
+{
+  "/health": {
+    "status": 200,
+    "body": {
+      "status": "ok"
+    }
+  },
+  "/api/arp-spoof/settings": {
+    "status": 200,
+    "body": {
+      "arp_spoof_enabled": true
+    }
+  },
+  "/api/arp-spoof/targets": {
+    "status": 200,
+    "body": [
+      {
+        "id": 1,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.249",
+        "satellite_vrf": "vbgp13915943249",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T12:02:13Z"
+      },
+      {
+        "id": 4,
+        "enabled": false,
+        "spoof_gateway_ip": "139.159.43.1",
+        "satellite_vrf": "vbgp139159431",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:42:16Z"
+      },
+      {
+        "id": 5,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.2",
+        "satellite_vrf": "vbgp139159432",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:42:25Z"
+      },
+      {
+        "id": 6,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.4",
+        "satellite_vrf": "vbgp139159434",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:42:36Z"
+      },
+      {
+        "id": 7,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.13",
+        "satellite_vrf": "vbgp1391594313",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:42:44Z"
+      },
+      {
+        "id": 8,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.14",
+        "satellite_vrf": "vbgp1391594314",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:42:50Z"
+      },
+      {
+        "id": 9,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.21",
+        "satellite_vrf": "vbgp1391594321",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:01Z"
+      },
+      {
+        "id": 10,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.22",
+        "satellite_vrf": "vbgp1391594322",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:07Z"
+      },
+      {
+        "id": 11,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.25",
+        "satellite_vrf": "vbgp1391594325",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:14Z"
+      },
+      {
+        "id": 12,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.26",
+        "satellite_vrf": "vbgp1391594326",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:21Z"
+      },
+      {
+        "id": 13,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.35",
+        "satellite_vrf": "vbgp1391594335",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:30Z"
+      },
+      {
+        "id": 14,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.36",
+        "satellite_vrf": "vbgp1391594336",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:37Z"
+      },
+      {
+        "id": 15,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.39",
+        "satellite_vrf": "vbgp1391594339",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:44Z"
+      },
+      {
+        "id": 16,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.40",
+        "satellite_vrf": "vbgp1391594340",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:51Z"
+      },
+      {
+        "id": 17,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.49",
+        "satellite_vrf": "vbgp1391594349",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:43:58Z"
+      },
+      {
+        "id": 18,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.50",
+        "satellite_vrf": "vbgp1391594350",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:44:05Z"
+      },
+      {
+        "id": 19,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.98",
+        "satellite_vrf": "vbgp1391594398",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:44:10Z"
+      },
+      {
+        "id": 20,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.99",
+        "satellite_vrf": "vbgp1391594399",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:44:17Z"
+      },
+      {
+        "id": 21,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.204",
+        "satellite_vrf": "vbgp13915943204",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:44:22Z"
+      },
+      {
+        "id": 22,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.205",
+        "satellite_vrf": "vbgp13915943205",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:44:38Z"
+      },
+      {
+        "id": 23,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.206",
+        "satellite_vrf": "vbgp13915943206",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-18T13:44:46Z"
+      },
+      {
+        "id": 25,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.245",
+        "satellite_vrf": "vbgp13915943245",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-20T13:33:36Z"
+      },
+      {
+        "id": 26,
+        "enabled": true,
+        "spoof_gateway_ip": "139.159.43.247",
+        "satellite_vrf": "vbgp13915943247",
+        "egress_iface": "eno1np0",
+        "policy_mode": "gateway_only",
+        "policy_cidrs": "",
+        "note": "",
+        "created_at": "2026-05-20T13:33:49Z"
+      }
+    ]
+  },
+  "/api/host-ifaces": {
+    "status": 200,
+    "body": {
+      "ifaces": [
+        "eno1np0",
+        "eno2np1",
+        "enp59s0f0np0",
+        "enp59s0f1np1",
+        "gobgp-rr",
+        "iv13",
+        "iv14",
+        "iv2",
+        "iv204",
+        "iv205",
+        "iv206",
+        "iv21",
+        "iv22",
+        "iv245",
+        "iv247",
+        "iv249",
+        "iv25",
+        "iv26",
+        "iv35",
+        "iv36",
+        "iv39",
+        "iv4",
+        "iv40",
+        "iv49",
+        "iv50",
+        "iv98",
+        "iv99",
+        "vbgp1391594313",
+        "vbgp1391594314",
+        "vbgp139159432",
+        "vbgp13915943204",
+        "vbgp13915943205",
+        "vbgp13915943206",
+        "vbgp1391594321",
+        "vbgp1391594322",
+        "vbgp13915943245",
+        "vbgp13915943247",
+        "vbgp13915943249",
+        "vbgp1391594325",
+        "vbgp1391594326",
+        "vbgp1391594335",
+        "vbgp1391594336",
+        "vbgp1391594339",
+        "vbgp139159434",
+        "vbgp1391594340",
+        "vbgp1391594349",
+        "vbgp1391594350",
+        "vbgp1391594398",
+        "vbgp1391594399"
+      ]
+    }
+  },
+  "/api/bgp/satellite-vrfs": {
+    "status": 200,
+    "body": {
+      "vrfs": [
+        "vbgp139159431",
+        "vbgp1391594313",
+        "vbgp1391594314",
+        "vbgp139159432",
+        "vbgp13915943204",
+        "vbgp13915943205",
+        "vbgp13915943206",
+        "vbgp1391594321",
+        "vbgp1391594322",
+        "vbgp13915943245",
+        "vbgp13915943247",
+        "vbgp13915943249",
+        "vbgp1391594325",
+        "vbgp1391594326",
+        "vbgp1391594335",
+        "vbgp1391594336",
+        "vbgp1391594339",
+        "vbgp139159434",
+        "vbgp1391594340",
+        "vbgp1391594349",
+        "vbgp1391594350",
+        "vbgp1391594398",
+        "vbgp1391594399"
+      ]
+    }
+  },
+  "/api/bgp/vrfs": {
+    "status": 200,
+    "body": [
+      {
+        "vrf": "gobgp-rr",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp139159431",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594313",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594314",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp139159432",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp13915943204",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp13915943205",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp13915943206",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594321",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594322",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp13915943245",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp13915943247",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp13915943249",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594325",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594326",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594335",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594336",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594339",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp139159434",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594340",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594349",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594350",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594398",
+        "local_as": 63199,
+        "has_router_bgp": true
+      },
+      {
+        "vrf": "vbgp1391594399",
+        "local_as": 63199,
+        "has_router_bgp": true
+      }
+    ]
+  },
+  "/api/bgp/neighbor-form-hints": {
+    "status": 200,
+    "body": {
+      "arp_spoof_gateway_ips": [
+        "139.159.43.13",
+        "139.159.43.14",
+        "139.159.43.2",
+        "139.159.43.204",
+        "139.159.43.205",
+        "139.159.43.206",
+        "139.159.43.21",
+        "139.159.43.22",
+        "139.159.43.245",
+        "139.159.43.247",
+        "139.159.43.249",
+        "139.159.43.25",
+        "139.159.43.26",
+        "139.159.43.35",
+        "139.159.43.36",
+        "139.159.43.39",
+        "139.159.43.4",
+        "139.159.43.40",
+        "139.159.43.49",
+        "139.159.43.50",
+        "139.159.43.98",
+        "139.159.43.99"
+      ],
+      "rr_neighbor_ip": "139.159.43.208",
+      "downstream_neighbor_ip": "139.159.43.208",
+      "local_as": 63199,
+      "router_id": "139.159.43.207",
+      "architecture": "gobgp_rx_tx",
+      "rr_from_op": true,
+      "advertise_source_options": [
+        "@upstream",
+        "@downstream",
+        "139.159.43.208",
+        "139.159.43.247"
+      ]
+    }
+  },
+  "/api/bgp/neighbors": {
+    "status": 200,
+    "body": [
+      {
+        "vrf": "gobgp-rr",
+        "neighbor_ip": "139.159.43.249",
+        "local_as": 63199,
+        "remote_as": 63199,
+        "source_ip": "139.159.43.249",
+        "role": "rr",
+        "session_state": "Established",
+        "routes_received": 1071352,
+        "routes_sent": 0,
+        "enabled": true,
+        "advertise_routes": 1,
+        "store_received_routes": 0,
+        "routes_cached": 0,
+        "note": ""
+      },
+      {
+        "vrf": "gobgp-rr",
+        "neighbor_ip": "139.159.43.245",
+        "local_as": 63199,
+        "remote_as": 63199,
+        "source_ip": "139.159.43.249",
+        "role": "rr",
+        "session_state": "Established",
+        "routes_received": 1038455,
+        "routes_sent": 0,
+        "enabled": true,
+        "advertise_routes": 0,
+        "store_received_routes": 0,
+        "routes_cached": 0,
+        "note": ""
+      },
+      {
+        "vrf": "vbgp13915943245",
+        "neighbor_ip": "139.159.43.208",
+        "local_as": 63199,
+        "remote_as": 63199,
+        "source_ip": "139.159.43.245",
+        "role": "downstream",
+        "session_state": "Established",
+        "routes_received": 1,
+        "routes_sent": 0,
+        "enabled": true,
+        "advertise_routes": 0,
+        "store_received_routes": 0,
+        "routes_cached": 0,
+        "note": ""
+      },
+      {
+        "vrf": "vbgp13915943247",
+        "neighbor_ip": "139.159.43.208",
+        "local_as": 63199,
+        "remote_as": 63199,
+        "source_ip": "139.159.43.247",
+        "role": "downstream",
+        "session_state": "Established",
+        "routes_received": 0,
+        "routes_sent": 0,
+        "enabled": true,
+        "advertise_routes": 0,
+        "store_received_routes": 0,
+        "routes_cached": 0,
+        "note": ""
+      },
+      {
+        "vrf": "vbgp13915943249",
+        "neighbor_ip": "139.159.43.208",
+        "local_as": 63199,
+        "remote_as": 63199,
+        "source_ip": "139.159.43.249",
+        "role": "downstream",
+        "session_state": "Established",
+        "routes_received": 1,
+        "routes_sent": 0,
+        "enabled": true,
+        "advertise_routes": 0,
+        "store_received_routes": 0,
+        "routes_cached": 0,
+        "note": ""
+      }
+    ]
+  },
+  "/api/global": {
+    "status": 200,
+    "body": {
+      "hijack_enabled": true
+    }
+  }
+}

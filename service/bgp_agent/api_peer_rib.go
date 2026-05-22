@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,6 +29,41 @@ func (s *APIServer) handleRibRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if window == "" || vrf == "" || neighbor == "" {
 		http.Error(w, "window, vrf, neighbor_ip required", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	if pfxRaw := strings.TrimSpace(q.Get("prefix")); pfxRaw != "" {
+		pfx, err := normalizeIPv4PrefixExact(pfxRaw)
+		if err != nil {
+			http.Error(w, "invalid prefix: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		rt, err := s.storage.GetPeerRoute(ctx, window, vrf, neighbor, pfx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]map[string]interface{}, 0, 1)
+		if rt != nil {
+			out = append(out, map[string]interface{}{
+				"window":      rt.Window,
+				"vrf":         rt.VRF,
+				"neighbor_ip": rt.NeighborIP,
+				"prefix":      rt.Prefix,
+				"nexthop":     rt.Nexthop,
+				"as_path":     rt.ASPath,
+				"remote_as":   rt.RemoteAS,
+				"updated_at":  rt.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			})
+		}
+		s.writeJSON(w, map[string]interface{}{
+			"routes":     out,
+			"total":      len(out),
+			"page":       1,
+			"page_size":  len(out),
+			"prefix":     pfx,
+			"data_store": "redis+rocksdb",
+		})
 		return
 	}
 	page, _ := strconv.Atoi(q.Get("page"))
@@ -210,4 +246,24 @@ func (s *APIServer) ingestPeerRoutesFromAdjIn(ctx context.Context, window, vrf, 
 		return 0, 0, err
 	}
 	return builder.Finish(ctx)
+}
+
+// normalizeIPv4PrefixExact 规范为 host/prefixlen（无掩码视为 /32），用于精确匹配 Redis key。
+func normalizeIPv4PrefixExact(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("empty")
+	}
+	if !strings.Contains(s, "/") {
+		s += "/32"
+	}
+	_, ipNet, err := net.ParseCIDR(s)
+	if err != nil {
+		return "", err
+	}
+	if ipNet.IP.To4() == nil {
+		return "", fmt.Errorf("ipv4 only")
+	}
+	ones, _ := ipNet.Mask.Size()
+	return ipNet.IP.String() + "/" + strconv.Itoa(ones), nil
 }

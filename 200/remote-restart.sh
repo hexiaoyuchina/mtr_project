@@ -1,12 +1,12 @@
 #!/bin/bash
-# 在 Linux 200 上执行：加载 lab 环境并重启 mtr-op / NFQUEUE（由 deploy.py 注入 REMOTE）
+# 在 Linux 200 上执行：加载 lab 环境并重启 mtr-op（TE 改写由 uvicorn/te_rewrite_sync 拉起）
 set -e
 REMOTE="${MTR_OP_REMOTE_DIR:-/root/mtr_op}"
 cd "$REMOTE"
 
 export GOBGP_AGENT_URL=http://127.0.0.1:9179
 export MTR_OP_DB="$REMOTE/data.db"
-export MTR_OP_NFT="$REMOTE/nft_mtr_spoof.nft"
+export MTR_OP_NFT="$REMOTE/nft_mtr_te.nft"
 export MTR_OP_DATA="$REMOTE/data"
 export LOCAL_AS="${LOCAL_AS:-63199}"
 export ROUTER_ID="${ROUTER_ID:-10.133.153.200}"
@@ -21,15 +21,14 @@ export MTR_AUTO_SATELLITE_VRF="${MTR_AUTO_SATELLITE_VRF:-note}"
 export MTR_AUTO_SATELLITE_VRF_NOTE="${MTR_AUTO_SATELLITE_VRF_NOTE:-BGPSAT}"
 export MTR_BGP_RIB_SYNC="${MTR_BGP_RIB_SYNC:-1}"
 export MTR_BGP_RIB_SYNC_SEC="${MTR_BGP_RIB_SYNC_SEC:-60}"
-export MTR_PROBE_SSH_HOST="${MTR_PROBE_SSH_HOST:-10.133.151.200}"
 export MTR_TE_PROBE_RETURN_VIA_200="${MTR_TE_PROBE_RETURN_VIA_200:-0}"
 export MTR_TE_PROBE_SRC="${MTR_TE_PROBE_SRC:-10.133.152.204}"
 export MTR_TE_RETURN_IP="${MTR_TE_RETURN_IP:-10.133.152.200}"
 export MTR_TE_REWRITE_IIF="${MTR_TE_REWRITE_IIF:-ens224}"
+export MTR_TE_REWRITE_SCRIPT="${MTR_TE_REWRITE_SCRIPT:-$REMOTE/te_rewrite_nfqueue.py}"
 export MTR_TE_REWRITE_PEER_HOSTS="${MTR_TE_REWRITE_PEER_HOSTS:-}"
 export MTR_TE_REWRITE_PEER_QUEUE="${MTR_TE_REWRITE_PEER_QUEUE:-2}"
 export MTR_TE_REWRITE_PEER_SCRIPT="${MTR_TE_REWRITE_PEER_SCRIPT:-/root/te_rewrite_nfqueue.py}"
-# 由 deploy 注入，供 peer SSH（勿提交明文密码到仓库）
 export MTR_OP_SSH_PASSWORD="${MTR_OP_SSH_PASSWORD:-}"
 export MTR_BGP_ROLE_MAP="${MTR_BGP_ROLE_MAP:-10.133.153.204:rr,10.133.152.204:downstream}"
 export MTR_BGP_DB_PRESETS="${MTR_BGP_DB_PRESETS:-default:10.133.153.204:rr,default:10.133.152.204:downstream}"
@@ -52,7 +51,6 @@ INITSCHEMA
 systemctl stop frr 2>/dev/null || true
 systemctl disable frr 2>/dev/null || true
 
-# 避免与错误 unit（service.app.main）双实例抢 8808
 systemctl stop mtr-op 2>/dev/null || true
 systemctl disable mtr-op 2>/dev/null || true
 pkill -f 'uvicorn service.app.main' 2>/dev/null || true
@@ -60,7 +58,8 @@ pkill -f 'uvicorn app.main:app' 2>/dev/null || true
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
 sleep 1
 nft delete table inet mtr_spoof 2>/dev/null || true
-[ -f nft_mtr_spoof.nft ] && nft -f nft_mtr_spoof.nft || echo "WARN: nft skipped"
+nft delete table inet mtr_te 2>/dev/null || true
+[ -f nft_mtr_te.nft ] && nft -f nft_mtr_te.nft || echo "WARN: nft skipped"
 
 : > /tmp/mtr_op.log
 if [ -x ./venv/bin/uvicorn ]; then UV=./venv/bin/uvicorn; else UV='python3 -m uvicorn'; fi
@@ -71,8 +70,6 @@ for i in $(seq 1 12); do
   sleep 1
 done
 
-: > /tmp/mtr_spoof_nfqueue.log
-nohup $PY mtr_spoof_nfqueue.py --op-db "$MTR_OP_DB" --verbose >> /tmp/mtr_spoof_nfqueue.log 2>&1 &
 pkill -f arp_spoof_daemon.py 2>/dev/null || true
 : > /tmp/arp_spoof_daemon.log
 if [ -f scripts/arp_spoof_daemon.py ]; then
@@ -84,4 +81,4 @@ else
 fi
 sleep 2
 curl -sS http://127.0.0.1:8808/health; echo
-pgrep -af 'uvicorn app.main|mtr_spoof|arp_spoof' || true
+pgrep -af 'uvicorn app.main|te_rewrite|arp_spoof' || true

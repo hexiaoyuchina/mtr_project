@@ -48,19 +48,26 @@
       }
       .app {
         height: 100%;
+        min-height: 0;
         display: grid;
         grid-template-columns: 270px 1fr;
+        overflow: hidden;
       }
       .sidebar {
         padding: 16px;
         border-right: 1px solid var(--border);
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
       }
       .brand {
         display: flex;
         align-items: center;
         gap: 10px;
         padding: 10px 10px 12px;
+        flex-shrink: 0;
       }
       .logo {
         width: 36px;
@@ -90,6 +97,10 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 4px;
       }
       .group-title {
         font-size: 11px;
@@ -153,6 +164,7 @@
       }
       .footer-tip {
         margin-top: 14px;
+        flex-shrink: 0;
         padding: 10px 12px;
         border-radius: 14px;
         border: 1px dashed rgba(255, 255, 255, 0.18);
@@ -163,8 +175,10 @@
       }
       .main {
         height: 100%;
+        min-height: 0;
         display: grid;
         grid-template-rows: 60px 1fr;
+        overflow: hidden;
       }
       .topbar {
         display: flex;
@@ -228,7 +242,10 @@
       }
       .content {
         padding: 18px;
-        overflow: auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
       }
       .grid {
         display: grid;
@@ -590,6 +607,13 @@
             </div>
             <div class="badge">冷备</div>
           </a>
+          <a data-page="staticRoutes">
+            <div class="left">
+              <div class="icon">S</div>
+              <div class="label">静态路由 / 转发策略</div>
+            </div>
+            <div class="badge" id="badgeStaticRoutes">109</div>
+          </a>
 
           <div class="group-title">Traffic & Rules</div>
           <a data-page="mtr">
@@ -739,6 +763,7 @@
                       <div class="row">
                         <span class="tag" id="tagGatewayReply"><span class="dot"></span>网关代答：—</span>
                         <span class="tag" id="tagGatewayScope"><span class="dot"></span>范围：—</span>
+                        <span class="tag" id="tagHostRouting"><span class="dot"></span>109 转发：—</span>
                       </div>
                       <div class="small" id="kpiGatewayHits">—</div>
                     </div>
@@ -1105,6 +1130,223 @@
             </div>
           </div>
 
+          <!-- Static routes / host forwarding (109) -->
+          <div class="page" data-page="staticRoutes" style="display: none">
+            <div class="grid cols-2">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">109 主机转发策略（模拟）</div>
+                  <div class="row">
+                    <span class="tag good" id="tagTransitStatus"><span class="dot"></span>Transit 已下发</span>
+                    <span class="tag" id="tagTransitHost"><span class="dot"></span>101.89.68.109</span>
+                  </div>
+                </div>
+                <div class="bd">
+                  <div class="kpis" style="grid-template-columns: repeat(3, 1fr)">
+                    <div class="kpi">
+                      <div class="k">去程表</div>
+                      <div class="v mono" id="kpiFwdTable">2110</div>
+                      <div class="s">iif 下联 → lookup</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">回程表</div>
+                      <div class="v mono" id="kpiRetTable">2111</div>
+                      <div class="s">to 客户端段 → lookup</div>
+                    </div>
+                    <div class="kpi">
+                      <div class="k">上次应用</div>
+                      <div class="v" style="font-size: 13px" id="kpiTransitApply">—</div>
+                      <div class="s mono" id="kpiTransitPersist">—</div>
+                    </div>
+                  </div>
+                  <div class="small" style="margin-top: 10px">
+                    对应脚本 <span class="mono">109/apply_downstream_transit.py</span>；卫星 VRF 路由由 ARP 收敛维护，本页仅展示。
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="hd">
+                  <div class="h">路由探测（模拟 check）</div>
+                  <button class="btn primary" id="btnRunRouteProbe">重新探测</button>
+                </div>
+                <div class="bd">
+                  <div class="list" id="routeProbeList"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top: 12px">
+              <div class="hd">
+                <div class="h">下联 MTR Transit 配置</div>
+                <div class="row">
+                  <label class="field" style="gap: 10px">
+                    <input type="checkbox" id="transitEnabled" checked />
+                    <span class="small">启用去程/回程策略</span>
+                  </label>
+                  <button class="btn primary" id="btnApplyTransit">应用下发</button>
+                  <button class="btn" id="btnCheckTransit">检查</button>
+                  <button class="btn" id="btnTeardownTransit">回退</button>
+                </div>
+              </div>
+              <div class="bd">
+                <div class="row">
+                  <div class="field" style="flex: 1">
+                    <label>下联接口</label>
+                    <input id="transitDownIface" class="mono" value="eno1np0" />
+                  </div>
+                  <div class="field" style="flex: 1">
+                    <label>上联接口</label>
+                    <input id="transitUpIface" class="mono" value="enp59s0f0np0" />
+                  </div>
+                  <div class="field" style="flex: 1">
+                    <label>下联地址</label>
+                    <input id="transitDownAddr" class="mono" value="139.159.43.209/24" />
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 10px">
+                  <div class="field" style="flex: 1">
+                    <label>下游 peer</label>
+                    <input id="transitPeerIp" class="mono" value="139.159.43.208" />
+                  </div>
+                  <div class="field" style="flex: 1">
+                    <label>RR 网关</label>
+                    <input id="transitRrGw" class="mono" value="139.159.43.249" />
+                  </div>
+                  <div class="field" style="flex: 1">
+                    <label>上联源地址</label>
+                    <input id="transitRrSrc" class="mono" value="139.159.43.207" />
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 10px">
+                  <div class="field">
+                    <label>去程表</label>
+                    <input id="transitFwdTable" class="mono" style="min-width: 64px" value="2110" />
+                  </div>
+                  <div class="field">
+                    <label>rule pref</label>
+                    <input id="transitFwdPref" class="mono" style="min-width: 48px" value="30" />
+                  </div>
+                  <div class="field">
+                    <label>回程表</label>
+                    <input id="transitRetTable" class="mono" style="min-width: 64px" value="2111" />
+                  </div>
+                  <div class="field">
+                    <label>rule pref</label>
+                    <input id="transitRetPref" class="mono" style="min-width: 48px" value="29" />
+                  </div>
+                  <div class="field" style="flex: 1">
+                    <label>回程匹配前缀</label>
+                    <input id="transitRetPrefix" class="mono" value="139.159.105.92/30" />
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 10px">
+                  <div class="field" style="flex: 1">
+                    <label>客户端 IP（静态邻居）</label>
+                    <input id="transitClientHosts" class="mono" value="139.159.105.94" placeholder="逗号分隔" />
+                  </div>
+                  <div class="field" style="flex: 2">
+                    <label>持久化脚本</label>
+                    <input id="transitPersistPath" class="mono" value="/usr/local/sbin/mtr-op-downstream-transit.sh" />
+                  </div>
+                </div>
+                <div class="small" style="margin-top: 10px">
+                  去程：<span class="mono">iif 下联 lookup 去程表</span>；回程：<span class="mono">to 客户端段 lookup 回程表</span>（非
+                  <span class="mono">iif 上联</span>）。不进卫星 VRF <span class="mono">vbgp13915943249</span>。
+                </div>
+              </div>
+            </div>
+
+            <div class="grid cols-2" style="margin-top: 12px">
+              <div class="card">
+                <div class="hd">
+                  <div class="h">策略路由（ip rule）</div>
+                  <div class="row">
+                    <button class="btn" id="btnAddPolicyRule">新增规则</button>
+                    <span class="tag"><span class="dot"></span>选表 · 非 BGP 前缀</span>
+                  </div>
+                </div>
+                <div class="bd">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>启用</th>
+                        <th>优先级</th>
+                        <th>匹配条件</th>
+                        <th>查表</th>
+                        <th>场景</th>
+                        <th>维护</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="policyRuleTable"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="hd">
+                  <div class="h">静态路由条目</div>
+                  <div class="row">
+                    <button class="btn" id="btnAddStaticRoute">新增路由</button>
+                    <span class="tag"><span class="dot"></span>表内 LPM</span>
+                  </div>
+                </div>
+                <div class="bd">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>启用</th>
+                        <th>备注</th>
+                        <th>目标地址</th>
+                        <th>网关</th>
+                        <th>接口</th>
+                        <th>源地址</th>
+                        <th>路由表</th>
+                        <th>类型</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="staticRouteTable"></tbody>
+                  </table>
+                  <div class="small" style="margin-top: 10px">
+                    字段对齐 RouterOS 静态路由：Dst / Gateway / Routing Mark（表号或 VRF）/ Pref. Source；Linux 对应
+                    <span class="mono">ip route replace table N …</span>。
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top: 12px">
+              <div class="hd">
+                <div class="h">卫星 VRF 路由（只读 · 由 ARP/BGP 收敛）</div>
+                <div class="row">
+                  <button class="btn" id="btnReconcileSatellite">补跑卫星收敛</button>
+                  <span class="tag warn"><span class="dot"></span>勿与 Transit 混编</span>
+                </div>
+              </div>
+              <div class="bd">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>VRF</th>
+                      <th>表号</th>
+                      <th>目标地址</th>
+                      <th>接口</th>
+                      <th>源地址</th>
+                      <th>说明</th>
+                    </tr>
+                  </thead>
+                  <tbody id="satelliteRouteTable"></tbody>
+                </table>
+                <div class="small" style="margin-top: 10px">
+                  另含 <span class="mono">from 冒充IP lookup 卫星表</span> 与下联 <span class="mono">nft DNAT :179→TX</span>，见
+                  <span class="mono">docs/BGP_SATELLITE_IP_RULE_AND_DNAT.md</span>。
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Gateway Settings -->
           <div class="page" data-page="gatewaySettings" style="display: none">
             <div class="grid cols-2">
@@ -1286,6 +1528,7 @@
                       <option value="ROUTE">路由缓存</option>
                       <option value="MTR">MTR劫持</option>
                       <option value="VPN">VPN状态</option>
+                      <option value="HOST_ROUTE">主机转发</option>
                       <option value="GATEWAY_REPLY">网关代答</option>
                       <option value="AUTH">登录/权限</option>
                     </select>
@@ -1448,6 +1691,10 @@
         bgp: { title: "BGP 管理", desc: "邻居状态、路由学习、导出与诊断" },
         routes: { title: "路由表查询", desc: "实时 BGP 与缓存路由回退（模拟 API）" },
         cache: { title: "缓存路由", desc: "BGP 断开时返回最近缓存快照" },
+        staticRoutes: {
+          title: "静态路由 / 转发策略",
+          desc: "109 主机策略路由：下联 Transit（2110/2111）、ip rule、表内静态路由（模拟）",
+        },
         mtr: { title: "MTR/ICMP 劫持策略", desc: "按运营商/目标网段匹配，伪造应答" },
         ipdb: { title: "IP 运营商规则库", desc: "Redis 规则库模拟：IP → 运营商" },
         gatewayPool: { title: "网关地址池", desc: "方案 A：仅代答（dst_ip 命中）+ 可与上游重合的隔离约束" },
@@ -1557,6 +1804,169 @@
           { dst: "1.1.1.0/24", src: "C4", vpn: "gre-hk-01", fail: "拒绝转发", enabled: true },
           { dst: "0.0.0.0/0", src: "默认", vpn: "gre-hk-01", fail: "回退普通出口", enabled: false },
         ],
+        downstreamTransit: {
+          enabled: true,
+          applied: true,
+          host: "101.89.68.109",
+          downstreamIface: "eno1np0",
+          uplinkIface: "enp59s0f0np0",
+          downstreamAddr: "139.159.43.209/24",
+          peerIp: "139.159.43.208",
+          rrGw: "139.159.43.249",
+          rrSrc: "139.159.43.207",
+          fwdTable: 2110,
+          retTable: 2111,
+          fwdRulePref: 30,
+          retRulePref: 29,
+          retPrefix: "139.159.105.92/30",
+          clientNeighHosts: "139.159.105.94",
+          persistPath: "/usr/local/sbin/mtr-op-downstream-transit.sh",
+          lastApply: "2026-05-21 10:22:00",
+        },
+        policyRules: [
+          {
+            id: 1,
+            pref: 30,
+            match: "iif eno1np0",
+            lookup: 2110,
+            profile: "下联去程",
+            managed: "transit",
+            enabled: true,
+          },
+          {
+            id: 2,
+            pref: 29,
+            match: "to 139.159.105.92/30",
+            lookup: 2111,
+            profile: "回程客户端",
+            managed: "transit",
+            enabled: true,
+          },
+          {
+            id: 3,
+            pref: 50,
+            match: "from 139.159.43.207",
+            lookup: 2103,
+            profile: "RR 上联",
+            managed: "system",
+            enabled: true,
+          },
+          {
+            id: 4,
+            pref: 1057,
+            match: "from 139.159.43.249",
+            lookup: 30449,
+            profile: "卫星 BGP",
+            managed: "arp",
+            enabled: true,
+          },
+        ],
+        staticRoutes: [
+          {
+            id: 1,
+            enabled: true,
+            comment: "去程-default",
+            dst: "0.0.0.0/0",
+            gateway: "139.159.43.249",
+            dev: "enp59s0f0np0",
+            src: "139.159.43.207",
+            table: "2110",
+            type: "unicast",
+            managed: "transit",
+          },
+          {
+            id: 2,
+            enabled: true,
+            comment: "去程-peer",
+            dst: "139.159.43.208/32",
+            gateway: "",
+            dev: "eno1np0",
+            src: "",
+            table: "2110",
+            type: "unicast",
+            managed: "transit",
+          },
+          {
+            id: 3,
+            enabled: true,
+            comment: "去程-同网段",
+            dst: "139.159.43.0/24",
+            gateway: "",
+            dev: "eno1np0",
+            src: "",
+            table: "2110",
+            type: "unicast",
+            managed: "transit",
+          },
+          {
+            id: 4,
+            enabled: true,
+            comment: "回程-客户端段",
+            dst: "139.159.105.92/30",
+            gateway: "",
+            dev: "eno1np0",
+            src: "",
+            table: "2111",
+            type: "unicast",
+            managed: "transit",
+          },
+          {
+            id: 5,
+            enabled: true,
+            comment: "回程-peer",
+            dst: "139.159.43.208/32",
+            gateway: "",
+            dev: "eno1np0",
+            src: "",
+            table: "2111",
+            type: "unicast",
+            managed: "transit",
+          },
+        ],
+        satelliteRoutes: [
+          {
+            vrf: "vbgp13915943249",
+            table: 30449,
+            dst: "139.159.43.208/32",
+            dev: "iv249",
+            src: "139.159.43.249",
+            note: "冒充 249 → 下游 BGP",
+          },
+          {
+            vrf: "vbgp13915943249",
+            table: 30449,
+            dst: "139.159.43.0/24",
+            dev: "iv249",
+            src: "139.159.43.249",
+            note: "同网段直连",
+          },
+        ],
+        routeProbes: [
+          {
+            name: "去程 105.94→8.8.8.8",
+            cmd: "ip route get 8.8.8.8 from 139.159.105.94 iif eno1np0",
+            ok: true,
+            result: "via 139.159.43.249 dev enp59s0f0np0 table 2110",
+          },
+          {
+            name: "回程 105.94←上联",
+            cmd: "ip route get 139.159.105.94 from 8.8.8.8 iif enp59s0f0np0",
+            ok: true,
+            result: "dev eno1np0 table 2111",
+          },
+          {
+            name: "本地查 105.94",
+            cmd: "ip route get 139.159.105.94",
+            ok: true,
+            result: "dev eno1np0 table 2111",
+          },
+          {
+            name: "邻居 105.94",
+            cmd: "ip neigh show dev eno1np0 | grep 105.94",
+            ok: true,
+            result: "139.159.105.94 lladdr <208-MAC> PERMANENT",
+          },
+        ],
         logs: [
           { ts: "14:58:22", type: "BGP", obj: "RR", msg: "BGP 邻居断开，已切换路由查询回退到缓存快照" },
           { ts: "14:58:25", type: "ROUTE", obj: "RouteCache", msg: "返回 cached_bgp（cache_time=2026-05-08 14:55:01）" },
@@ -1565,6 +1975,12 @@
           { ts: "15:58:01", type: "GATEWAY_REPLY", obj: "100.64.1.1", msg: "命中网关池：dst_ip=100.64.1.1，回 ICMP Port Unreachable（源IP伪装为网关IP）" },
           { ts: "15:57:42", type: "GATEWAY_REPLY", obj: "100.64.2.1", msg: "命中网关池：dst_ip=100.64.2.1，回 ICMP Echo Reply（源IP伪装为网关IP）" },
           { ts: "15:00:02", type: "AUTH", obj: "admin", msg: "登录成功（IP=10.0.0.10）" },
+          {
+            ts: "10:22:05",
+            type: "HOST_ROUTE",
+            obj: "transit-2110/2111",
+            msg: "apply_downstream_transit：pref30 iif eno1np0；pref29 to 105.92/30；neigh 105.94 permanent",
+          },
         ],
       };
 
@@ -1677,6 +2093,181 @@
         $("#tagGatewayScope").className = `tag ${scopeIface || scopeSrc ? "good" : "bad"}`;
         const hits = (mock.gatewayHitPreview || []).length;
         $("#kpiGatewayHits").textContent = `网关代答命中：${hits} 条（模拟）`;
+
+        const t = mock.downstreamTransit || {};
+        const transitOn = !!t.enabled && !!t.applied;
+        const tagHr = $("#tagHostRouting");
+        if (tagHr) {
+          tagHr.innerHTML = `<span class="dot"></span>109 转发：${transitOn ? "Transit 已下发" : "未下发"}`;
+          tagHr.className = `tag ${transitOn ? "good" : "warn"}`;
+        }
+        const badgeSr = $("#badgeStaticRoutes");
+        if (badgeSr) badgeSr.textContent = String((mock.staticRoutes || []).length);
+      }
+
+      function managedTag(m) {
+        if (m === "transit") return `<span class="tag good"><span class="dot"></span>Transit</span>`;
+        if (m === "arp") return `<span class="tag warn"><span class="dot"></span>ARP 收敛</span>`;
+        if (m === "system") return `<span class="tag"><span class="dot"></span>系统</span>`;
+        return `<span class="tag"><span class="dot"></span>手动</span>`;
+      }
+
+      function syncTransitFormFromMock() {
+        const t = mock.downstreamTransit;
+        if (!t) return;
+        const set = (id, val) => {
+          const el = $(id);
+          if (el != null && val != null) el.value = String(val);
+        };
+        const chk = $("#transitEnabled");
+        if (chk) chk.checked = !!t.enabled;
+        set("#transitDownIface", t.downstreamIface);
+        set("#transitUpIface", t.uplinkIface);
+        set("#transitDownAddr", t.downstreamAddr);
+        set("#transitPeerIp", t.peerIp);
+        set("#transitRrGw", t.rrGw);
+        set("#transitRrSrc", t.rrSrc);
+        set("#transitFwdTable", t.fwdTable);
+        set("#transitFwdPref", t.fwdRulePref);
+        set("#transitRetTable", t.retTable);
+        set("#transitRetPref", t.retRulePref);
+        set("#transitRetPrefix", t.retPrefix);
+        set("#transitClientHosts", t.clientNeighHosts);
+        set("#transitPersistPath", t.persistPath);
+      }
+
+      function readTransitFormToMock() {
+        const t = mock.downstreamTransit;
+        if (!t) return;
+        t.enabled = !!$("#transitEnabled")?.checked;
+        t.downstreamIface = $("#transitDownIface")?.value?.trim() || t.downstreamIface;
+        t.uplinkIface = $("#transitUpIface")?.value?.trim() || t.uplinkIface;
+        t.downstreamAddr = $("#transitDownAddr")?.value?.trim() || t.downstreamAddr;
+        t.peerIp = $("#transitPeerIp")?.value?.trim() || t.peerIp;
+        t.rrGw = $("#transitRrGw")?.value?.trim() || t.rrGw;
+        t.rrSrc = $("#transitRrSrc")?.value?.trim() || t.rrSrc;
+        t.fwdTable = parseInt($("#transitFwdTable")?.value, 10) || t.fwdTable;
+        t.fwdRulePref = parseInt($("#transitFwdPref")?.value, 10) || t.fwdRulePref;
+        t.retTable = parseInt($("#transitRetTable")?.value, 10) || t.retTable;
+        t.retRulePref = parseInt($("#transitRetPref")?.value, 10) || t.retRulePref;
+        t.retPrefix = $("#transitRetPrefix")?.value?.trim() || t.retPrefix;
+        t.clientNeighHosts = $("#transitClientHosts")?.value?.trim() || t.clientNeighHosts;
+        t.persistPath = $("#transitPersistPath")?.value?.trim() || t.persistPath;
+      }
+
+      function renderStaticRoutes() {
+        const t = mock.downstreamTransit || {};
+        syncTransitFormFromMock();
+
+        const applied = !!t.enabled && !!t.applied;
+        const st = $("#tagTransitStatus");
+        if (st) {
+          st.className = `tag ${applied ? "good" : "warn"}`;
+          st.innerHTML = `<span class="dot"></span>${applied ? "Transit 已下发" : "Transit 未下发"}`;
+        }
+        const th = $("#tagTransitHost");
+        if (th) th.innerHTML = `<span class="dot"></span>${t.host || "101.89.68.109"}`;
+        const kf = $("#kpiFwdTable");
+        if (kf) kf.textContent = String(t.fwdTable ?? "2110");
+        const kr = $("#kpiRetTable");
+        if (kr) kr.textContent = String(t.retTable ?? "2111");
+        const ka = $("#kpiTransitApply");
+        if (ka) ka.textContent = t.lastApply || "—";
+        const kp = $("#kpiTransitPersist");
+        if (kp) kp.textContent = t.persistPath || "—";
+
+        const probes = $("#routeProbeList");
+        if (probes) {
+          probes.innerHTML = "";
+          (mock.routeProbes || []).forEach((p) => {
+            const el = document.createElement("div");
+            el.className = "item";
+            el.innerHTML = `
+              <div class="t">
+                <div class="title">${p.name}</div>
+                <span class="tag ${p.ok ? "good" : "bad"}"><span class="dot"></span>${p.ok ? "通过" : "失败"}</span>
+              </div>
+              <div class="meta mono">${p.cmd}</div>
+              <div class="meta mono">${p.result}</div>
+            `;
+            probes.appendChild(el);
+          });
+        }
+
+        const pr = $("#policyRuleTable");
+        if (pr) {
+          pr.innerHTML = "";
+          (mock.policyRules || []).forEach((r) => {
+            const tr = document.createElement("tr");
+            const ro = r.managed !== "transit";
+            tr.innerHTML = `
+              <td>${r.enabled ? '<span class="tag good"><span class="dot"></span>是</span>' : '<span class="tag warn"><span class="dot"></span>否</span>'}</td>
+              <td class="mono">${r.pref}</td>
+              <td class="mono">${r.match}</td>
+              <td class="mono">${r.lookup}</td>
+              <td>${r.profile}</td>
+              <td>${managedTag(r.managed)}</td>
+              <td class="row">
+                <button class="btn" data-act="detail">详情</button>
+                ${ro ? "" : `<button class="btn" data-act="toggle">${r.enabled ? "禁用" : "启用"}</button>`}
+              </td>
+            `;
+            tr.querySelector('[data-act="detail"]')?.addEventListener("click", () => openModal(`ip rule：pref ${r.pref}`, r));
+            tr.querySelector('[data-act="toggle"]')?.addEventListener("click", () => {
+              r.enabled = !r.enabled;
+              toast(`规则 pref ${r.pref} 已${r.enabled ? "启用" : "禁用"}（模拟）`);
+              renderStaticRoutes();
+            });
+            pr.appendChild(tr);
+          });
+        }
+
+        const sr = $("#staticRouteTable");
+        if (sr) {
+          sr.innerHTML = "";
+          (mock.staticRoutes || []).forEach((r) => {
+            const tr = document.createElement("tr");
+            const ro = r.managed !== "transit";
+            tr.innerHTML = `
+              <td>${r.enabled ? '<span class="tag good"><span class="dot"></span>是</span>' : '<span class="tag warn"><span class="dot"></span>否</span>'}</td>
+              <td>${r.comment || "—"}</td>
+              <td class="mono">${r.dst}</td>
+              <td class="mono">${r.gateway || "—"}</td>
+              <td class="mono">${r.dev || "—"}</td>
+              <td class="mono">${r.src || "—"}</td>
+              <td class="mono">${r.table}</td>
+              <td class="mono">${r.type}</td>
+              <td class="row">
+                <button class="btn" data-act="detail">详情</button>
+                ${ro ? "" : `<button class="btn" data-act="toggle">${r.enabled ? "禁用" : "启用"}</button>`}
+              </td>
+            `;
+            tr.querySelector('[data-act="detail"]')?.addEventListener("click", () => openModal(`静态路由：${r.dst}`, r));
+            tr.querySelector('[data-act="toggle"]')?.addEventListener("click", () => {
+              r.enabled = !r.enabled;
+              toast(`路由 ${r.dst} 已${r.enabled ? "启用" : "禁用"}（模拟）`);
+              renderStaticRoutes();
+            });
+            sr.appendChild(tr);
+          });
+        }
+
+        const sat = $("#satelliteRouteTable");
+        if (sat) {
+          sat.innerHTML = "";
+          (mock.satelliteRoutes || []).forEach((r) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+              <td class="mono">${r.vrf}</td>
+              <td class="mono">${r.table}</td>
+              <td class="mono">${r.dst}</td>
+              <td class="mono">${r.dev}</td>
+              <td class="mono">${r.src}</td>
+              <td>${r.note}</td>
+            `;
+            sat.appendChild(tr);
+          });
+        }
       }
 
       function renderBGP() {
@@ -2051,6 +2642,7 @@
         renderIPDB();
         renderGatewayPool();
         renderGatewaySettings();
+        renderStaticRoutes();
         renderVPN();
         renderLogs();
       }
@@ -2159,6 +2751,45 @@
         toast("日志筛选完成（模拟）");
       });
 
+      $("#btnApplyTransit")?.addEventListener("click", () => {
+        readTransitFormToMock();
+        const t = mock.downstreamTransit;
+        t.applied = !!t.enabled;
+        const d = new Date();
+        t.lastApply = d.toISOString().replace("T", " ").slice(0, 19);
+        mock.logs.unshift({
+          ts: nowHHMMSS(),
+          type: "HOST_ROUTE",
+          obj: `table-${t.fwdTable}/${t.retTable}`,
+          msg: `Transit 应用：pref${t.fwdRulePref} iif ${t.downstreamIface}；pref${t.retRulePref} to ${t.retPrefix}`,
+        });
+        toast("Transit 策略已应用（模拟，等价 apply_downstream_transit.py）");
+        renderStaticRoutes();
+        renderOverview();
+        renderLogs();
+      });
+
+      $("#btnCheckTransit")?.addEventListener("click", () => {
+        readTransitFormToMock();
+        toast("路由探测完成（模拟）");
+        renderStaticRoutes();
+      });
+
+      $("#btnTeardownTransit")?.addEventListener("click", () => {
+        mock.downstreamTransit.applied = false;
+        mock.downstreamTransit.enabled = false;
+        const chk = $("#transitEnabled");
+        if (chk) chk.checked = false;
+        toast("Transit 已回退（模拟 teardown）");
+        renderStaticRoutes();
+        renderOverview();
+      });
+
+      $("#btnRunRouteProbe")?.addEventListener("click", () => {
+        toast("已重新执行 ip route get / neigh 探测（模拟）");
+        renderStaticRoutes();
+      });
+
       // modal
       $("#modalClose").addEventListener("click", closeModal);
       $("#modalBackdrop").addEventListener("click", (e) => {
@@ -2187,6 +2818,9 @@
         ["#btnAddVPN", "新增 VPN"],
         ["#btnTestVPN", "VPN 连通性测试"],
         ["#btnAddVpnPolicy", "新增 VPN 策略"],
+        ["#btnAddPolicyRule", "新增 ip rule"],
+        ["#btnAddStaticRoute", "新增静态路由"],
+        ["#btnReconcileSatellite", "补跑卫星收敛"],
         ["#btnLogExport", "导出日志"],
         ["#btnSaveSettings", "保存设置"],
         ["#btnResetSettings", "重置设置"],

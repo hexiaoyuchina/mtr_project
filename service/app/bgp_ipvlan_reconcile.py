@@ -60,11 +60,21 @@ def peer_ip_for_vrf(
 
     conn = storage.connect(db_path)
     try:
-        return storage.downstream_neighbor_ip_for_vrf(conn, (vrf or "").strip())
+        nip = storage.downstream_neighbor_ip_for_vrf(conn, (vrf or "").strip())
+        if nip:
+            return nip
     except sqlite3.OperationalError:
-        return None
+        pass
     finally:
         conn.close()
+    # 多卫星 VRF 仅配 ARP、未在 BGP 管理写 meta 时，用 env 对端（现网 208）
+    env_peer = peer_ip()
+    if env_peer:
+        try:
+            return str(ipaddress.ip_address(env_peer))
+        except ValueError:
+            return None
+    return None
 
 
 def vrf_prefix() -> str:

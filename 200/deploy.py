@@ -25,6 +25,13 @@ LAB_DIR = Path(__file__).resolve().parent
 ROOT = LAB_DIR.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+from bgp_agent_build import (  # noqa: E402
+    bgp_agent_binary,
+    build_bgp_agent_for_deploy,
+    prebuilt_deploy_enabled,
+    remote_rebuild_enabled,
+    should_run_local_build,
+)
 from bgp_agent_remote import bgp_agent_config_from_env, shell_sync_bgp_agent  # noqa: E402
 from deploy_light import (  # noqa: E402
     REMOTE,
@@ -36,7 +43,6 @@ from deploy_light import (  # noqa: E402
 )
 
 SERVICE = ROOT / "service"
-NFQ = ROOT / "scripts" / "mtr_spoof_nfqueue.py"
 TE_NFQ = ROOT / "scripts" / "te_rewrite_nfqueue.py"
 ARP_DAEMON = ROOT / "scripts" / "arp_spoof_daemon.py"
 OVERLAY = LAB_DIR / "overlay" / "bgp_agent"
@@ -87,9 +93,17 @@ def main() -> None:
     if not pw:
         print("请设置 MTR_OP_SSH_PASSWORD（或写入 200/lab.env）", file=sys.stderr)
         sys.exit(2)
-    if not SERVICE.is_dir() or not NFQ.is_file() or not TE_NFQ.is_file() or not ARP_DAEMON.is_file():
-        print("缺少 service/ 或 scripts/*_nfqueue.py / arp_spoof_daemon.py", file=sys.stderr)
+    if not SERVICE.is_dir() or not TE_NFQ.is_file() or not ARP_DAEMON.is_file():
+        print("缺少 service/ 或 te_rewrite_nfqueue.py / arp_spoof_daemon.py", file=sys.stderr)
         sys.exit(1)
+
+    use_prebuilt = prebuilt_deploy_enabled(ROOT)
+    if use_prebuilt and should_run_local_build(ROOT):
+        print("=== 本地编译 bgp_agent ===", flush=True)
+        build_bgp_agent_for_deploy(ROOT)
+    elif use_prebuilt and not bgp_agent_binary(ROOT).is_file():
+        print("未找到 service/bgp_agent/bgp_agent，请先: python tools/bgp_agent_build.py", file=sys.stderr)
+        sys.exit(2)
 
     remote = os.environ.get("MTR_OP_REMOTE_DIR", REMOTE).strip()
     print(f"=== Linux 200 部署 -> {host}:{remote} ===")
@@ -98,8 +112,7 @@ def main() -> None:
     c = connect(host)
     sftp = c.open_sftp()
     try:
-        upload_tree(sftp, SERVICE, remote)
-        sftp.put(str(NFQ), f"{remote}/mtr_spoof_nfqueue.py")
+        upload_tree(sftp, SERVICE, remote, include_binary=use_prebuilt)
         sftp.put(str(TE_NFQ), f"{remote}/te_rewrite_nfqueue.py")
         try:
             sftp.stat(f"{remote}/scripts")
@@ -157,11 +170,7 @@ def main() -> None:
             restart += f'export {key}="{val}"\n'
     restart += f"bash {remote}/remote-restart.sh\n"
 
-    rebuild = os.environ.get("MTR_DEPLOY_BUILD_BGP_AGENT", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-    }
+    rebuild = False if use_prebuilt else remote_rebuild_enabled()
     bgp_cfg = bgp_agent_config_from_env()
     bgp_cfg["remote_dir"] = remote
     restart += shell_sync_bgp_agent(bgp_cfg, rebuild=rebuild)

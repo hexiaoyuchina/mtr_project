@@ -33,7 +33,7 @@
 |------|------|----------------|
 | BGP Agent | 9179 | `bgp-agent.service` |
 | MTR OP Web | 8808 | `nohup uvicorn`（全量脚本） |
-| MTR NFQUEUE | — | `mtr_spoof_nfqueue.py` |
+| TE NFQUEUE | — | `te_rewrite_nfqueue.py`（路径 A，改真实 TE 外层源） |
 
 ---
 
@@ -157,8 +157,8 @@ curl -s http://127.0.0.1:8808/api/gobgp/status
 |------|------|
 | Agent 起不来 | `journalctl -u bgp-agent -n 50` |
 | Web 不通 | `/tmp/mtr_op.log` |
-| NFQUEUE | `/tmp/mtr_spoof_nfqueue.log`、`/tmp/te_rewrite_nfqueue.log` |
-| NFQUEUE 仍绑 ens192/ens224 | 确认 `MTR_TE_REWRITE_OIF/IIF` 或 `MTR_BGP_*`；`iptables -t mangle -S FORWARD \| grep NFQUEUE` 应为 eno1np0 / enp59s0f0np0 |
+| TE NFQUEUE / mtr 全 timeout | `/tmp/te_rewrite_nfqueue.log`；详见 [`docs/MTR_TE_REWRITE.md`](../docs/MTR_TE_REWRITE.md) |
+| NFQUEUE 仍绑 ens192/ens224 | 确认 `MTR_TE_REWRITE_OIF/IIF`；`iptables -t mangle -S FORWARD \| grep NFQUEUE` 应为 eno1np0 / enp59s0f0np0 |
 | 网口配错 | `BGP_OP_NETWORK.md` |
 
 ---
@@ -171,4 +171,5 @@ curl -s http://127.0.0.1:8808/api/gobgp/status
 $env:MTR_OP_HOST = "101.89.68.109"
 $env:MTR_OP_SSH_PASSWORD = "<密码>"
 python tools/deploy_light.py
+# 仅 OP：python tools/deploy_light.py --op-only
 ```

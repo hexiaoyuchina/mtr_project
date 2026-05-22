@@ -12,10 +12,12 @@ pkill -f bgp_agent 2>/dev/null || true
 pkill -f 'uvicorn app.main' 2>/dev/null || true
 pkill -f 'uvicorn service.app.main' 2>/dev/null || true
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
+pkill -f te_rewrite_nfqueue 2>/dev/null || true
 pkill -f arp_spoof_daemon 2>/dev/null || true
 sleep 2
 
 nft delete table inet mtr_spoof 2>/dev/null || true
+nft delete table inet mtr_te 2>/dev/null || true
 nft delete table inet nat_sat_bgp 2>/dev/null || true
 
 rm -rf "$REMOTE"
@@ -30,7 +32,7 @@ if command -v redis-cli >/dev/null 2>&1; then
 fi
 
 : > /tmp/mtr_op.log 2>/dev/null || true
-: > /tmp/mtr_spoof_nfqueue.log 2>/dev/null || true
+: > /tmp/te_rewrite_nfqueue.log 2>/dev/null || true
 : > /tmp/arp_spoof_daemon.log 2>/dev/null || true
 
 echo "remote-clean-fresh_ok"

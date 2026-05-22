@@ -170,6 +170,27 @@ func (s *Storage) DeletePeerRoute(ctx context.Context, window, vrf, neighbor, pr
 	return s.rocksdb.Delete(wo, peerRouteRocksKey(window, vrf, neighbor, prefix))
 }
 
+// GetPeerRoute 按前缀精确查询（Redis 主记录；O(1)）。
+func (s *Storage) GetPeerRoute(ctx context.Context, window, vrf, neighbor, prefix string) (*PeerRoute, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil, nil
+	}
+	rkey := peerRouteRedisKey(window, vrf, neighbor, prefix)
+	data, err := s.redis.Get(ctx, rkey).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var rt PeerRoute
+	if err := json.Unmarshal(data, &rt); err != nil {
+		return nil, err
+	}
+	return &rt, nil
+}
+
 // CountPeerRoutes 该 peer 在 Redis 计数器中的条数（O(1)）。
 func (s *Storage) CountPeerRoutes(ctx context.Context, window, vrf, neighbor string) (int64, error) {
 	v, err := s.redis.Get(ctx, peerCountRedisKey(window, vrf, neighbor)).Int64()

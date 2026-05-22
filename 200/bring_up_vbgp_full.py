@@ -147,11 +147,7 @@ curl -sf -X POST http://127.0.0.1:9179/api/gobgp/unfreeze
 curl -sf -X POST http://127.0.0.1:8808/api/gobgp/unfreeze
 echo
 
-# 重启 arp 守护（引流 GARP）
 pkill -f mtr_spoof_nfqueue 2>/dev/null || true
-sleep 1
-cd {remote} && nohup ./venv/bin/python3 mtr_spoof_nfqueue.py --op-db {remote}/data.db --verbose >>/tmp/mtr_spoof_nfqueue.log 2>&1 &
-sleep 2
 
 echo '--- ping ---'
 ping -c2 -W2 -I {SPOOF} {PEER} || true

@@ -14,7 +14,11 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
-from bgp_agent_remote import bgp_agent_config_from_env, shell_sync_bgp_agent  # noqa: E402
+from bgp_agent_remote import (  # noqa: E402
+    bgp_agent_config_from_env,
+    deploy_exec_timeout,
+    shell_sync_bgp_agent,
+)
 
 HOST = os.environ.get("MTR_OP_HOST", "101.89.68.109").strip()
 USER = os.environ.get("MTR_OP_SSH_USER", "root").strip()
@@ -39,7 +43,8 @@ def main() -> None:
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     print(f"Connecting {USER}@{HOST} ...", flush=True)
     c.connect(HOST, username=USER, password=PW, timeout=30, allow_agent=False, look_for_keys=False)
-    stdin, stdout, stderr = c.exec_command("bash -se", timeout=300)
+    ssh_timeout = deploy_exec_timeout(remote_rebuild=rebuild)
+    stdin, stdout, stderr = c.exec_command("bash -se", timeout=ssh_timeout)
     stdin.write(script)
     stdin.channel.shutdown_write()
     out = stdout.read().decode() + stderr.read().decode()

@@ -332,6 +332,7 @@ BGP 中间人负责 **控制面**（§2 Agent 存 RIB + §3 两扇窗快照/通�
 |------|------|
 | [BGP_DATA_AND_API.md](./BGP_DATA_AND_API.md) | SQLite 表字段、OP / Agent HTTP 接口 |
 | [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md) | 三网口分工与环境变量 |
+| [BGP_SATELLITE_IP_RULE_AND_DNAT.md](./BGP_SATELLITE_IP_RULE_AND_DNAT.md) | 卫星 `ip rule`、入站 :179 → TX 口 nft DNAT |
 | [BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md) | 编译、systemd、验收 |
 | [BGP_ARP_SPOOF_MULTI_SESSION.md](./BGP_ARP_SPOOF_MULTI_SESSION.md) | ARP + 多 VRF 冒充（内核侧） |
 | [部署.md](./部署.md) | 日常发版 |

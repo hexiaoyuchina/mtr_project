@@ -2,7 +2,7 @@
 
 > **现网 OP 主机**：`101.89.68.109`（原实验室文档中的 Linux 200 / `10.133.152.200`）。  
 > **现网 BGP**：`LOCAL_AS=63199`，RR `139.159.43.249`，下游 `139.159.43.208` — 网口分工见 **[BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)**；控制面架构见 **[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)**（GoBGP RX/TX + SQLite，非 FRR 会话）。  
-> 部署见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)。  
+> 部署见 [部署.md](./部署.md)、[BGP_RXTX_DEPLOYMENT.md](./BGP_RXTX_DEPLOYMENT.md)。卫星 **`ip rule` + nft DNAT** 见 [BGP_SATELLITE_IP_RULE_AND_DNAT.md](./BGP_SATELLITE_IP_RULE_AND_DNAT.md)。  
 > 下文 `10.133.152.*` 示例仅适用于 **VM 实验室**（Linux 200/201），勿直接套用到现网。
 
 ## 需求在协议里的含义
@@ -100,16 +100,21 @@ curl -s http://127.0.0.1:8808/api/bgp/neighbors | python3 -m json.tool
 操作顺序：
 
 1. **ARP 引流**：冒充网关 `139.159.43.249`，`satellite_vrf` 填 `vbgp13915943249`（或留空由系统生成），**出接口** 选 **`eno1np0`**（下游与冒充 BGP 数据面；**勿**选 `enp59s0f0np0`，该口仅用于真 RR 会话 `207→249`）。
-2. **卫星 VRF 收敛**（保存 ARP 或 `POST /api/arp-spoof/satellite-vrfs/reconcile`）：创建 ipvlan `iv249@eno1np0`、到 `MTR_BGP_IPVLAN_PEER_IP`（现网 `139.159.43.208`）的 VRF 路由，以及 `ip rule from 249 lookup <vrf表>`。真 RR 主表路由走 `MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0`，见 [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)。
-3. **BGP 管理**：VRF 选 `vbgp13915943249`，邻居 `139.159.43.208`，角色 **下游**，TCP 源 **249**；Agent 会对该邻居设置 `bind_interface=iv249`。
-4. **208 侧**：须接受来自 `139.159.43.249` 的 BGP（或主动连该地址），与真 RR 路径独立。
+2. **卫星 VRF 收敛**（保存 ARP 或 `POST /api/arp-spoof/satellite-vrfs/reconcile`，或 `python 109/reconcile_satellite.py`）：
+   - ipvlan `iv249@eno1np0`、VRF `vbgp13915943249`、到 `MTR_BGP_IPVLAN_PEER_IP`（现网 `139.159.43.208`）的 VRF 路由；
+   - **`ip rule`**：`from 249 lookup <卫星表>`，及 `from 249 to 208 lookup <卫星表>`（避免源 249 走上联 `enp59`）；
+   - **`nft DNAT`**（`inet mtr_bgp_sat_dnat`）：`iif eno1np0` 上 `daddr 249 tcp dport 179 redirect to :1830`（对端按标准端口连冒充 IP 时进 **TX**，不进 RX **:179**）。
+   - 细则见 **[BGP_SATELLITE_IP_RULE_AND_DNAT.md](./BGP_SATELLITE_IP_RULE_AND_DNAT.md)**；真 RR 仍走 `MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0`，见 [BGP_OP_NETWORK.md](./BGP_OP_NETWORK.md)。
+3. **BGP 管理**：VRF 选 `vbgp13915943249`，邻居 `139.159.43.208`，角色 **下游**，TCP 源 **249**；Agent 设置 `bind_interface=iv249`（109 主动连 208 时通常 `passive_mode=false`；若 `MTR_BGP_RR_SPOOF_PASSIVE=1` 则等对端连 249:179，更依赖 DNAT）。
+4. **208 侧**：须接受来自 `139.159.43.249` 的 BGP（`neighbor 249` / 等价配置），或接受 109 主动连；与真 RR 路径独立。
 
-环境变量（现网）：`MTR_BGP_IPVLAN_PEER_IP=139.159.43.208`，`MTR_BGP_IPVLAN_BASE_IFACE=eno1np0`，`MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0`，`MTR_SATELLITE_BGP_TCP_SOURCE=spoof`。
+环境变量（现网）：`MTR_BGP_IPVLAN_AUTO=1`，`MTR_BGP_SAT_DNAT_AUTO=1`，`MTR_BGP_IPVLAN_PEER_IP=139.159.43.208`，`MTR_BGP_IPVLAN_BASE_IFACE=eno1np0`，`MTR_BGP_RR_UPLINK_IFACE=enp59s0f0np0`，`MTR_BGP_RR_SPOOF_IPVLAN_ADDR=1`，`MTR_SATELLITE_BGP_TCP_SOURCE=spoof`。
 
 ---
 
 ## 关联
 
+- [BGP_SATELLITE_IP_RULE_AND_DNAT.md](./BGP_SATELLITE_IP_RULE_AND_DNAT.md) — 卫星 `ip rule` 与入站 :179 nft DNAT（对端主动连冒充 IP）  
 - OP 前端：`service/static/index.html` BGP 管理（数据来自 bgp-agent + SQLite）。  
 - API 重复新增：`POST /api/bgp/neighbors` 返回 409，`detail.code` 为 `neighbor_already_exists`。  
 - ARP 与 `update-source`：`service/app/arp_spoof_assign.py`、`scripts/arp_spoof_daemon.py`。
