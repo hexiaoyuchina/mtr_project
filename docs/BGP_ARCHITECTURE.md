@@ -1,6 +1,8 @@
-# BGP 双向中间人架构（最终版）
+# BGP 双向中间人架构（现网）
 
-本文描述 **现网最终形态**：**bgp-agent** 按「LinuxA BGP Route Persistence Proxy」方案承载 **百万级 RIB**（GoBGP **RX/TX 分离** + **Redis 热缓存** + **RocksDB 持久化**）；**mtr-op** 在其上增加 **SQLite 运营快照**（邻居 meta、Web 分页、按 peer 通告编排、freeze 元数据），**并未用 SQLite 替代 Redis/RocksDB**。
+> **目标态（RIB/FIB、无入库·通告开关、BGP 管理仅启用/删除）** 见 **[BGP_FIB_TARGET.md](./BGP_FIB_TARGET.md)**。本文描述 **当前代码路径**。
+
+本文描述 **现网形态**：**bgp-agent** 按「LinuxA BGP Route Persistence Proxy」方案承载 **百万级 RIB**（GoBGP **RX/TX 分离** + **Redis 热缓存** + **RocksDB 持久化**）；**mtr-op** 在其上增加 **SQLite 运营快照**（邻居 meta、Web 分页、按 peer 通告编排、freeze 元数据），**并未用 SQLite 替代 Redis/RocksDB**。
 
 | 层级 | 存储 | 规模与职责 |
 |------|------|------------|

@@ -1,6 +1,10 @@
 # BGP 数据模型与 HTTP 接口
 
-与架构说明配套：[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)（**§2**：百万 RIB = Agent **Redis/RocksDB** 按 peer；**本节 SQLite** = 邻居 meta / freeze，**学习路由列表改读 Agent 持久库**）。
+与架构说明配套：[BGP_ARCHITECTURE.md](./BGP_ARCHITECTURE.md)（现网）、**目标态** [BGP_FIB_TARGET.md](./BGP_FIB_TARGET.md)（FIB、自动入库/通告、**去掉入库·通告开关**）。
+
+现网：**§2** 百万 RIB = Agent **Redis/RocksDB** 按 peer；SQLite = 邻居 meta / freeze；学习路由 **读 Agent**。
+
+> **目标态变更摘要**见 [BGP_FIB_TARGET.md §13](./BGP_FIB_TARGET.md#13-现网文档api-目标态变更摘要)：`store_received_routes` / `advertise_routes` 及对应 API、UI 按钮 **将删除**。
 
 默认 OP 库文件由 `MTR_DB` 指定（常见 `/root/mtr_op/data.db`），schema 在 `service/app/storage.py` 的 `init_schema` 中初始化。Agent 侧 RIB 见 `GET /api/routes`、`GET /api/storage/stats`（`:9179`）。
 
