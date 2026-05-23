@@ -280,31 +280,271 @@ def reconcile_one(route: storage.StaticRoute, db_path: Optional[Path] = None) ->
     return "applied"
 
 
-def probe_one(route: storage.StaticRoute, probe_dst: Optional[str] = None) -> Dict[str, Any]:
-    dst = (probe_dst or route.dst_cidr).strip()
-    try:
-        net = ipaddress.ip_network(dst, strict=False)
-        if net.prefixlen < 32:
-            dst = str(net.network_address)
-        else:
-            dst = str(net.network_address)
-    except ValueError:
-        dst = dst.split("/")[0]
+def _parse_ipv4_rules() -> List[Dict[str, Any]]:
+    """解析 ``ip -4 rule list``（用于 table 探测拼 iif/from/mark）。"""
+    rc, out = _run(["ip", "-4", "rule", "list"], timeout=8.0)
+    if rc != 0:
+        return []
+    rules: List[Dict[str, Any]] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or "lookup" not in line:
+            continue
+        m = re.match(r"^(\d+):\s+from\s+(\S+)\s*(.*)$", line)
+        if not m:
+            continue
+        pref_s, src, tail = m.group(1), m.group(2), (m.group(3) or "").strip()
+        to = iif = mark = None
+        lookup: Optional[str] = None
+        tokens = tail.split()
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "to" and i + 1 < len(tokens):
+                to = tokens[i + 1]
+                i += 2
+            elif tok == "iif" and i + 1 < len(tokens):
+                iif = tokens[i + 1]
+                i += 2
+            elif tok == "mark" and i + 1 < len(tokens):
+                mark = tokens[i + 1]
+                i += 2
+            elif tok == "lookup" and i + 1 < len(tokens):
+                lookup = tokens[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not lookup or not str(lookup).isdigit():
+            continue
+        rules.append(
+            {
+                "pref": int(pref_s),
+                "from": src,
+                "to": to,
+                "iif": iif,
+                "mark": mark,
+                "table": int(lookup),
+            }
+        )
+    return rules
 
+
+def _probe_host_in_prefix(cidr: str) -> str:
+    net = ipaddress.ip_network((cidr or "").strip(), strict=False)
+    if net.version != 4:
+        raise ValueError("probe_ipv4_only")
+    hosts = list(net.hosts())
+    if hosts:
+        return str(hosts[0])
+    return str(net.network_address)
+
+
+def _dst_in_prefix(dst_cidr: str, prefix: str) -> bool:
+    try:
+        d = ipaddress.ip_network(_normalize_dst(dst_cidr), strict=False)
+        p = ipaddress.ip_network(prefix, strict=False)
+        return d.subnet_of(p) or d == p
+    except ValueError:
+        return False
+
+
+def _choose_probe_iif(route: storage.StaticRoute, rules: List[Dict[str, Any]]) -> str:
+    dev = (route.egress_iface or "").strip()
+    if dev:
+        return dev
+    down = (os.environ.get("MTR_OP_DOWNSTREAM_IFACE") or "").strip()
+    if down and any(r.get("iif") == down for r in rules):
+        return down
+    if down and any(r.get("to") and _dst_in_prefix(route.dst_cidr, r["to"]) for r in rules):
+        return down
+    for r in rules:
+        if r.get("iif"):
+            return str(r["iif"])
+    return down
+
+
+def _choose_probe_from(route: storage.StaticRoute, rules: List[Dict[str, Any]]) -> str:
+    """模拟策略选路源地址；``pref_src`` 多为路由出口 src，勿与 rule 的 from 混用。"""
+    ps = (route.pref_src or "").strip()
+    if ps:
+        try:
+            ps_addr = ipaddress.ip_address(ps)
+            for r in rules:
+                frm = (r.get("from") or "").strip()
+                if frm and frm not in ("all", "0.0.0.0/0") and "/" in frm:
+                    if ps_addr in ipaddress.ip_network(frm, strict=False):
+                        return ps
+        except ValueError:
+            pass
+    env = (os.environ.get("MTR_STATIC_ROUTE_PROBE_FROM") or "").strip()
+    if env:
+        return env
+    for r in rules:
+        to_p = (r.get("to") or "").strip()
+        if to_p and to_p != "all":
+            try:
+                return _probe_host_in_prefix(to_p)
+            except ValueError:
+                pass
+    ret_pfx = (os.environ.get("MTR_DOWNSTREAM_RETURN_PREFIX") or "139.159.105.92/30").strip()
+    if ret_pfx:
+        try:
+            return _probe_host_in_prefix(ret_pfx)
+        except ValueError:
+            pass
+    for r in rules:
+        frm = (r.get("from") or "").strip()
+        if frm and frm not in ("all", "0.0.0.0/0"):
+            if "/" in frm:
+                try:
+                    return _probe_host_in_prefix(frm)
+                except ValueError:
+                    pass
+            return frm
+    return ""
+
+
+def _lpm_route_in_table(tid: int, dst_ip: str) -> Optional[str]:
+    """``ip route get`` 不支持 table 时的 FIB 最长前缀匹配（只读）。"""
+    rc, out = _run(["ip", "-j", "route", "show", "table", str(tid)], timeout=10.0)
+    if rc != 0 or not out.strip():
+        return None
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    try:
+        addr = ipaddress.ip_address(dst_ip)
+    except ValueError:
+        return None
+    best: Optional[Tuple[int, str]] = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = (row.get("dst") or "").strip()
+        if not raw:
+            continue
+        if raw.lower() == "default":
+            net = ipaddress.ip_network("0.0.0.0/0")
+        else:
+            try:
+                net = ipaddress.ip_network(raw, strict=False)
+            except ValueError:
+                continue
+        if net.version != 4 or addr not in net:
+            continue
+        plen = int(net.prefixlen)
+        parts = [raw if raw.lower() != "default" else "default"]
+        if row.get("gateway"):
+            parts.append(f"via {row['gateway']}")
+        if row.get("dev"):
+            parts.append(f"dev {row['dev']}")
+        if row.get("prefsrc"):
+            parts.append(f"src {row['prefsrc']}")
+        line = " ".join(parts)
+        if best is None or plen > best[0]:
+            best = (plen, line)
+    return best[1] if best else None
+
+
+def _probe_table_route(route: storage.StaticRoute, dst_ip: str) -> Dict[str, Any]:
+    """策略表探测：``ip route get`` 无 table 关键字，用 rule 推导的 iif/from/mark。"""
+    tid = _resolve_table_id(route)
+    if tid is None:
+        return {"ok": False, "rc": -1, "argv": [], "output": "table_scope_requires_table_id"}
+    rules = [r for r in _parse_ipv4_rules() if r.get("table") == tid]
+
+    def _argv(iif: str, src: str, mark: Optional[str] = None) -> List[str]:
+        a = ["ip", "route", "get", dst_ip]
+        if iif:
+            a.extend(["iif", iif])
+        if src:
+            a.extend(["from", src])
+        if mark:
+            a.extend(["mark", str(mark)])
+        return a
+
+    iif = _choose_probe_iif(route, rules)
+    src = _choose_probe_from(route, rules)
+    attempts: List[List[str]] = [_argv(iif, src)]
+    for r in rules:
+        if r.get("mark"):
+            attempts.append(_argv(iif, src, r.get("mark")))
+    if iif:
+        attempts.append(_argv("", src))
+    seen: set = set()
+    last: Dict[str, Any] = {"ok": False, "rc": -1, "argv": [], "output": ""}
+    for argv in attempts:
+        key = tuple(argv)
+        if key in seen:
+            continue
+        seen.add(key)
+        rc, out = _run(argv, timeout=10.0)
+        last = {"ok": rc == 0, "rc": rc, "argv": argv, "output": out[:1200]}
+        if rc == 0:
+            return last
+
+    line = _lpm_route_in_table(tid, dst_ip)
+    if line:
+        note = (
+            f"[表 {tid} FIB 匹配] {line}\n"
+            "(ip route get 不支持 table；已尝试 iif/from 策略上下文，上为 show table LPM)"
+        )
+        return {
+            "ok": True,
+            "rc": 0,
+            "argv": ["ip", "-j", "route", "show", "table", str(tid)],
+            "output": note[:1200],
+        }
+    if last.get("output"):
+        last["output"] = (
+            last["output"]
+            + "\n(hint: ip route get 不支持 table；请确认 ip rule 与 pref_src/下联地址)"
+        )[:1200]
+    return last
+
+
+def _probe_destination_ip(route: storage.StaticRoute, probe_dst: Optional[str] = None) -> str:
+    """``ip route get`` 用的目的 IP：须为具体地址，不能留空（否则 CLI 会把 table 当成前缀）。"""
+    raw = (probe_dst or route.dst_cidr or "").strip()
+    if not raw:
+        raise ValueError("probe_requires_dst: 请填写目的网段，或 API 传 probe_dst")
+    norm = _normalize_dst(raw)
+    net = ipaddress.ip_network(norm, strict=False)
+    if net.version != 4:
+        raise ValueError("probe_ipv4_only")
+    if net.prefixlen == 0:
+        # 0.0.0.0/0、default：用公网地址测「该表/VRF 下 default 怎么走」
+        return (os.environ.get("MTR_STATIC_ROUTE_PROBE_DST") or "8.8.8.8").strip()
+    return str(net.network_address)
+
+
+def _probe_route_argv(route: storage.StaticRoute, dst_ip: str) -> List[str]:
     scope = (route.install_scope or "main").strip().lower()
-    argv: List[str]
     if scope == "vrf":
         vrf = (route.routing_mark or "").strip()
-        argv = ["ip", "vrf", "exec", vrf, "ip", "route", "get", dst]
+        if not vrf:
+            raise ValueError("vrf_scope_requires_routing_mark")
+        argv = ["ip", "vrf", "exec", vrf, "ip", "route", "get", dst_ip]
     else:
-        argv = ["ip", "route", "get", dst]
         if scope == "table":
-            tid = _resolve_table_id(route)
-            if tid is not None:
-                argv = ["ip", "route", "get", dst, "table", str(tid)]
+            raise ValueError("table_scope_use_probe_table_route")
+        argv = ["ip", "route", "get", dst_ip]
     src = (route.pref_src or "").strip()
     if src:
         argv.extend(["from", src])
+    return argv
+
+
+def probe_one(route: storage.StaticRoute, probe_dst: Optional[str] = None) -> Dict[str, Any]:
+    try:
+        dst_ip = _probe_destination_ip(route, probe_dst)
+        scope = (route.install_scope or "main").strip().lower()
+        if scope == "table":
+            return _probe_table_route(route, dst_ip)
+        argv = _probe_route_argv(route, dst_ip)
+    except ValueError as e:
+        return {"ok": False, "rc": -1, "argv": [], "output": str(e)}
     rc, out = _run(argv, timeout=10.0)
     return {"ok": rc == 0, "rc": rc, "argv": argv, "output": out[:1200]}
 
@@ -388,6 +628,16 @@ def probe_routes(
         if id_set is not None and r.id not in id_set:
             continue
         if not r.enabled:
+            if id_set is not None:
+                results.append(
+                    {
+                        "id": r.id,
+                        "ok": False,
+                        "rc": -1,
+                        "argv": [],
+                        "output": "route_disabled: 路由已停用，探测跳过（启用后可再试）",
+                    }
+                )
             continue
         one = probe_one(r, probe_dst=probe_dst)
         one["id"] = r.id

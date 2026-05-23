@@ -190,6 +190,7 @@ def main() -> None:
     load_env_file(ROOT / "109" / "env")
     service_dir = ROOT / "service"
     te_nfq = ROOT / "scripts" / "te_rewrite_nfqueue.py"
+    nft_admin_acl = ROOT / "scripts" / "nft_mtr_admin_acl.nft"
     if not agent_only:
         if not service_dir.is_dir():
             print("missing service/", file=sys.stderr)
@@ -243,6 +244,8 @@ def main() -> None:
         else:
             upload_tree(sftp, service_dir, REMOTE, include_binary=use_prebuilt and not op_only)
             sftp.put(str(te_nfq), f"{REMOTE}/te_rewrite_nfqueue.py")
+            if nft_admin_acl.is_file():
+                sftp.put(str(nft_admin_acl), f"{REMOTE}/nft_mtr_admin_acl.nft")
     finally:
         sftp.close()
 

@@ -1940,7 +1940,10 @@ async def api_static_routes_apply(body: StaticRouteIdsBody = StaticRouteIdsBody(
 async def api_static_routes_probe(body: StaticRouteIdsBody = StaticRouteIdsBody()):
     conn = _db()
     try:
-        rows = storage.list_static_routes(conn, enabled_only=True)
+        # 单条探测需包含已停用路由，以便返回明确原因而非空 results
+        rows = storage.list_static_routes(
+            conn, enabled_only=not (body.ids and len(body.ids) > 0)
+        )
     finally:
         conn.close()
     return await _run_blocking_call(

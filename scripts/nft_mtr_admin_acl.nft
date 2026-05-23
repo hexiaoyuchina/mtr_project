@@ -1,0 +1,26 @@
+# SSH(22) / OP Web(8808) 源地址白名单 — 由 109/apply_admin_acl.py 按 env 生成并覆盖本文件后加载。
+# 默认网段见 MTR_ADMIN_ACL_CIDRS；本机 127.0.0.0/8 与已建立连接放行。
+
+table inet mtr_admin_acl {
+  set admin_whitelist {
+    type ipv4_addr
+    flags interval
+    elements = {
+      101.251.211.168/29,
+      101.251.214.176/28,
+      106.120.247.120/29,
+      101.251.204.16/29,
+      164.52.12.80/29,
+      101.251.255.176/29
+    }
+  }
+
+  chain input {
+    type filter hook input priority filter - 15; policy accept;
+    iif "lo" accept
+    ct state established,related accept
+    tcp dport { 22, 8808 } ip saddr 127.0.0.0/8 accept
+    tcp dport { 22, 8808 } ip saddr @admin_whitelist accept
+    tcp dport { 22, 8808 } counter drop
+  }
+}

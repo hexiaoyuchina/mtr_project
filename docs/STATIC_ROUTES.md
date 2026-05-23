@@ -23,6 +23,8 @@ OP 提供可编辑的静态路由条目，通过 `ip route replace` 写入 **mai
 
 弹窗与列表会显示 **命令预览**；应用前请用 **批量探测**（`ip route get` / `ip vrf exec`）核对。
 
+**探测说明**：对 **main/VRF** 执行 `ip route get <IP> [from 源]`；对 **table** 作用域，因 `ip route get` **不支持** `table` 参数，会按 `ip rule` 与路由上的 `egress_iface`/`pref_src` 拼 `iif`/`from`（109 下联场景常用 `iif eno1np0` + 客户端网段源地址）。**0.0.0.0/0** 用 `8.8.8.8`（或 `MTR_STATIC_ROUTE_PROBE_DST`）作探测 IP；仍失败时回退为 `ip route show table N` 的 LPM 匹配说明。
+
 ## API
 
 | 方法 | 路径 |

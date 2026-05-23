@@ -892,12 +892,6 @@
               <div class="hd">
                 <div class="h">ARP 引流条目（逐条配置）</div>
                 <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
-                  <button type="button" class="btn" id="btnArpReconcileSatellite" title="按当前配置创建/删除卫星VRF">
-                    同步卫星VRF
-                  </button>
-                  <button type="button" class="btn primary" id="btnArpAddQuick" title="快速添加新的冒充IP">
-                    + 快速添加
-                  </button>
                   <button type="button" class="btn" id="btnArpRefresh" title="刷新ARP引流列表">
                     刷新列表
                   </button>
@@ -905,7 +899,7 @@
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0">
-                  每条记录：<strong>冒充哪个网关 IPv4</strong>、经 Linux 200 的<strong>哪个接口</strong>发二层帧（真实 MAC 取自该口）；守护进程对该条做<strong>周期性 GARP</strong>并在收到 ARP 询问时按策略回复。保存后 OP 会<strong>立即</strong>尝试在该接口上添加该 IPv4 的 <span class="mono">/32</span>（与守护进程逻辑一致，便于 BGP <span class="mono">update-source</span>）；总开关关闭或删除条目时会撤掉不再需要的 <span class="mono">/32</span>。需本机具备 <span class="mono">CAP_NET_ADMIN</span>（通常 root 跑 OP）。可用环境变量 <span class="mono">MTR_OP_ARP_ASSIGN_HOST_IP=0</span> 关闭 OP 侧下发。总览可一键开关 ARP 引流总控；单条仍以「启用」为准。<strong>卫星 VRF 自动建</strong>：在 200 上设 <span class="mono">MTR_AUTO_SATELLITE_VRF=cidr</span>（或 <span class="mono">all</span> / <span class="mono">note</span>）后，保存匹配条目的 ARP 即会尝试创建 <span class="mono">vbgp*</span>（见 <span class="mono">service/README.md</span>）；亦可点击上方「同步卫星VRF」按钮。
+                  每条记录：<strong>冒充哪个网关 IPv4</strong>、经本机的<strong>哪个接口</strong>发二层帧（真实 MAC 取自该口）；守护进程对该条做<strong>周期性 GARP</strong>并在收到 ARP 询问时按策略回复。保存后 OP 会<strong>立即</strong>尝试在该接口上添加该 IPv4 的 <span class="mono">/32</span>（便于 BGP <span class="mono">update-source</span>）；总开关关闭或删除条目时会撤掉不再需要的 <span class="mono">/32</span>。需本机具备 <span class="mono">CAP_NET_ADMIN</span>（通常 root 跑 OP）。可用环境变量 <span class="mono">MTR_OP_ARP_ASSIGN_HOST_IP=0</span> 关闭 OP 侧下发。总览可一键开关 ARP 引流总控；单条仍以「启用」为准。开启 <span class="mono">MTR_BGP_IPVLAN_AUTO=1</span> 时，保存条目会自动收敛卫星 VRF（ipvlan、ip rule、nft DNAT）。
                 </p>
                 <div class="row" style="gap: 10px; flex-wrap: wrap; margin-bottom: 14px">
                   <button type="button" class="btn primary" id="btnAddArpTarget">添加条目</button>
@@ -1289,35 +1283,6 @@
         <div class="row" style="justify-content: flex-end; gap: 10px; margin-top: 12px">
           <button type="button" class="btn" id="srDlgCancel">取消</button>
           <button type="button" class="btn primary" id="srDlgSave">保存</button>
-        </div>
-      </div>
-    </dialog>
-
-    <dialog id="dlgArpQuickAdd" style="border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 0; background: #131c2e; color: rgba(255,255,255,0.92); max-width: 400px; box-shadow: var(--shadow)">
-      <div style="padding: 16px 18px">
-        <div style="font-weight: 720; margin-bottom: 12px">快速添加冒充IP</div>
-        <div class="field" style="margin-bottom: 10px">
-          <label>冒充网关 IPv4</label>
-          <input id="arpQuickIp" class="mono" style="width: 100%" placeholder="10.133.152.242" autocomplete="off" />
-        </div>
-        <div class="field" style="margin-bottom: 10px">
-          <label>VRF名称（如 vbgp10133152242）</label>
-          <input id="arpQuickVrf" class="mono" style="width: 100%" placeholder="vbgp10133152242" autocomplete="off" />
-        </div>
-        <div class="field" style="margin-bottom: 10px">
-          <label>接口</label>
-          <select id="arpQuickIface" class="mono" style="width: 100%"></select>
-        </div>
-        <div class="field" style="margin-bottom: 10px">
-          <label>备注</label>
-          <input id="arpQuickNote" style="width: 100%" placeholder="自动化测试" autocomplete="off" />
-        </div>
-        <p class="small" style="margin-top: 8px; margin-bottom: 12px; color: var(--warn)">
-          添加后会自动创建卫星VRF（路由、接口等），并自动下发到 Linux 201 的 BGP 邻居（默认 10.133.152.204 / AS65201）
-        </p>
-        <div class="row" style="justify-content: flex-end; gap: 10px">
-          <button type="button" class="btn" id="arpQuickCancel">取消</button>
-          <button type="button" class="btn primary" id="arpQuickSave">添加并同步VRF+BGP</button>
         </div>
       </div>
     </dialog>
@@ -1724,9 +1689,6 @@
         return tag("warn", "—");
       }
 
-      const BGP_IPVLAN_REMOTE_AS = 65201;
-      const BGP_IPVLAN_LOCAL_AS = 65200;
-
       function ipWithoutDots(ip) {
         return String(ip || "").replace(/\./g, "");
       }
@@ -1734,44 +1696,6 @@
       function defaultVbgpForIp(ip) {
         const ipNoDots = ipWithoutDots(ip);
         return ipNoDots ? `vbgp${ipNoDots}` : "";
-      }
-
-      function prefillBgpFromArp(row) {
-        const ip = String(row?.spoof_gateway_ip || "").trim();
-        const vrf = String(row?.satellite_vrf || "").trim() || defaultVbgpForIp(ip);
-        if (!ip || !vrf) {
-          toast("该 ARP 条目缺少冒充 IP 或 VRF");
-          return;
-        }
-        showPage("bgp");
-        $("#bgpVrf").value = vrf;
-        $("#bgpPeerAs").value = String(BGP_IPVLAN_REMOTE_AS);
-        $("#bgpPeerRole").value = "downstream";
-        $("#bgpPeerSource").value = ip;
-        if ($("#bgpEnsureAs")) $("#bgpEnsureAs").value = String(BGP_IPVLAN_LOCAL_AS);
-        if ($("#bgpEnsureRid")) $("#bgpEnsureRid").value = ip;
-        toast(`已带入 BGP 表单：${vrf} / source ${ip}`);
-      }
-
-      async function addBgpNeighborForArp(ip, vrf) {
-        const neighbor_ip = ($("#bgpPeerIp").value || "").trim();
-        if (!neighbor_ip) {
-          throw new Error("请先在 BGP 管理填写「邻居IP」（下游对端）");
-        }
-        const remote_as = Number($("#bgpPeerAs").value || 0) || BGP_IPVLAN_REMOTE_AS;
-        const payload = {
-          vrf,
-          neighbor_ip,
-          remote_as,
-          role: "downstream",
-          bgp_local_as: BGP_IPVLAN_LOCAL_AS,
-          bgp_router_id: ip,
-          create_kernel_vrf_if_missing: true,
-        };
-        return apiFetch("/api/bgp/neighbors", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
       }
 
       function bgpStateTag(state, enabled) {
@@ -2619,12 +2543,10 @@
               <td>${r.note || ""}</td>
               <td class="row">
                 <button type="button" class="btn primary" data-act="edit">编辑</button>
-                ${vrfName ? '<button type="button" class="btn" data-act="bgp">带入BGP</button>' : ""}
                 <button type="button" class="btn" data-act="tog">${en ? "停用" : "启用"}</button>
                 <button type="button" class="btn" data-act="del">删除</button>
               </td>`;
             tr.querySelector('[data-act="edit"]').addEventListener("click", () => openArpEdit(r));
-            tr.querySelector('[data-act="bgp"]')?.addEventListener("click", () => prefillBgpFromArp(r));
             tr.querySelector('[data-act="tog"]').addEventListener("click", async () => {
               try {
                 await apiFetch(`/api/arp-spoof/targets/${r.id}`, {
@@ -2654,7 +2576,7 @@
             tbody.appendChild(tr);
           });
           if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="10" class="small">暂无条目，点击「添加条目」或「+ 快速添加」</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="small">暂无条目，点击「添加条目」</td></tr>';
           }
         } catch {
           tbody.innerHTML = '<tr><td colspan="10">加载失败</td></tr>';
@@ -2921,7 +2843,11 @@
                   pre.style.display = "block";
                   pre.textContent = one?.output || JSON.stringify(j, null, 2);
                 }
-                toast(one?.ok ? "探测成功" : "探测失败");
+                if (one?.ok) toast("探测成功");
+                else {
+                  const hint = (one?.output || (one ? "" : "无结果（路由已停用或未找到）")).split("\n")[0].slice(0, 100);
+                  toast(hint ? `探测失败：${hint}` : "探测失败");
+                }
               } catch (e) {
                 toast(`探测失败：${String(e).slice(0, 80)}`);
               }
@@ -2962,30 +2888,6 @@
       async function loadStaticRoutesPage() {
         await loadSrScopes();
         await loadStaticRoutesTable();
-      }
-
-      async function reconcileSatelliteVrf() {
-        const btn = $("#btnArpReconcileSatellite");
-        if (!btn) return;
-        btn.disabled = true;
-        try {
-          const result = await apiFetch("/api/arp-spoof/satellite-vrfs/reconcile", { method: "POST" });
-          let msg = "";
-          if (result.skipped) {
-            msg = `跳过：${result.reason}`;
-          } else {
-            const created = (result.results || []).length;
-            const deleted = (result.deleted || []).length;
-            msg = `同步完成：创建 ${created} 个，删除 ${deleted} 个卫星VRF`;
-          }
-          toast(msg);
-        } catch (e) {
-          toast(`同步失败：${String(e).slice(0, 100)}`);
-        } finally {
-          btn.disabled = false;
-          await loadArpTargetsTable();
-          await refreshBGP();
-        }
       }
 
       async function loadVpnSummary() {
@@ -3276,98 +3178,6 @@
 
       $("#edCancel")?.addEventListener("click", () => $("#dlgHopEdit").close());
       $("#edSave")?.addEventListener("click", () => saveHopEdit());
-
-      $("#btnArpReconcileSatellite")?.addEventListener("click", reconcileSatelliteVrf);
-
-      $("#btnArpAddQuick")?.addEventListener("click", async () => {
-        await loadArpDlgIfaces("");
-        const sel = $("#arpQuickIface");
-        if (sel && sel.options.length > 1) {
-          sel.value = sel.options[1].value;
-        }
-        $("#arpQuickIp").value = "";
-        $("#arpQuickVrf").value = "";
-        $("#arpQuickNote").value = "";
-        $("#dlgArpQuickAdd").showModal();
-      });
-
-      $("#arpQuickIp")?.addEventListener("input", () => {
-        const vrf = $("#arpQuickVrf");
-        if (!vrf) return;
-        vrf.value = defaultVbgpForIp($("#arpQuickIp").value);
-      });
-
-      $("#arpQuickCancel")?.addEventListener("click", () => {
-        $("#dlgArpQuickAdd").close();
-      });
-
-      $("#arpQuickSave")?.addEventListener("click", async () => {
-        const ip = $("#arpQuickIp").value.trim();
-        let vrf = $("#arpQuickVrf").value.trim();
-        if (!vrf) vrf = defaultVbgpForIp(ip);
-        const iface = $("#arpQuickIface").value.trim();
-        const note = $("#arpQuickNote").value.trim();
-        
-        if (!ip) {
-          toast("请填写冒充网关IP");
-          return;
-        }
-        if (!vrf) {
-          toast("请填写VRF名称");
-          return;
-        }
-        if (!iface) {
-          toast("请选择接口");
-          return;
-        }
-
-        const btn = $("#arpQuickSave");
-        btn.disabled = true;
-        
-        try {
-          await apiFetch("/api/arp-spoof/targets", {
-            method: "POST",
-            body: JSON.stringify({
-              spoof_gateway_ip: ip,
-              satellite_vrf: vrf,
-              egress_iface: iface,
-              enabled: true,
-              policy_mode: "gateway_only",
-              note: note || "快速添加"
-            }),
-          });
-          
-          toast("ARP引流条目已添加");
-          $("#dlgArpQuickAdd").close();
-          
-          await loadArpTargetsTable();
-          await loadArpSpoofSummary();
-          
-          await apiFetch("/api/arp-spoof/satellite-vrfs/reconcile", { method: "POST" });
-          try {
-            await addBgpNeighborForArp(ip, vrf);
-            toast("已同步VRF并下发BGP邻居，请等待建立");
-          } catch (e) {
-            const body = e?.body?.detail;
-            const msg = typeof body === "string" ? body : JSON.stringify(body || String(e));
-            if (e?.status === 409 || msg.includes("neighbor_already_exists")) {
-              toast("VRF已同步，BGP邻居已存在");
-            } else {
-              toast(`VRF已同步，BGP下发失败：${msg.slice(0, 160)}`);
-            }
-          }
-          
-          setTimeout(async () => {
-            await loadArpTargetsTable();
-            await refreshBGP();
-          }, 5000);
-          
-        } catch (e) {
-          toast(`添加失败：${String(e).slice(0, 100)}`);
-        } finally {
-          btn.disabled = false;
-        }
-      });
 
       $("#btnArpRefresh")?.addEventListener("click", async () => {
         await loadArpTargetsTable();
