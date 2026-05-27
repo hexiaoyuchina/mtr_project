@@ -198,14 +198,16 @@ def _remove_applied(route_id: int, db_path: Optional[Path] = None) -> None:
 
 
 def _kernel_show_argv(route: storage.StaticRoute) -> List[str]:
+    """按目的前缀查询内核，避免 ``show table N`` 扫百万 FIB（如 2110）。"""
+    dst = _route_dst_token(route.dst_cidr)
     scope = (route.install_scope or "main").strip().lower()
     if scope == "vrf":
         vrf = (route.routing_mark or "").strip()
-        return ["ip", "-j", "route", "show", "vrf", vrf]
+        return ["ip", "-j", "route", "show", "vrf", vrf, dst]
     if scope == "table":
         tid = _resolve_table_id(route)
-        return ["ip", "-j", "route", "show", "table", str(tid)]
-    return ["ip", "-j", "route", "show"]
+        return ["ip", "-j", "route", "show", "table", str(tid), dst]
+    return ["ip", "-j", "route", "show", dst]
 
 
 def _normalize_dst(dst: str) -> str:
@@ -265,12 +267,31 @@ def kernel_line_for(route: storage.StaticRoute) -> Optional[str]:
     return None
 
 
-def reconcile_one(route: storage.StaticRoute, db_path: Optional[Path] = None) -> str:
+def reconcile_one_db(route: storage.StaticRoute, db_path: Optional[Path] = None) -> str:
+    """仅对照库 + ``.static_routes_applied.json``，不读内核 FIB（列表页用）。"""
     if not route.enabled:
         return "stopped"
     path = applied_state_path(_db_path(db_path))
     applied = _load_applied_state(path).get(str(route.id))
-    kernel = kernel_line_for(route)
+    expect_argv = build_route_argv(route)
+    if not applied:
+        return "missing"
+    if applied != expect_argv:
+        return "stale"
+    return "applied"
+
+
+def reconcile_one(
+    route: storage.StaticRoute,
+    db_path: Optional[Path] = None,
+    *,
+    kernel_line: Optional[str] = None,
+) -> str:
+    if not route.enabled:
+        return "stopped"
+    path = applied_state_path(_db_path(db_path))
+    applied = _load_applied_state(path).get(str(route.id))
+    kernel = kernel_line if kernel_line is not None else kernel_line_for(route)
     if not kernel:
         return "missing"
     if applied:
@@ -661,10 +682,11 @@ def delete_routes_kernel(
     return {"results": results}
 
 
-def list_scopes(db_path: Optional[Path] = None) -> Dict[str, Any]:
+def list_scopes(db_path: Optional[Path] = None, *, db_only: bool = False) -> Dict[str, Any]:
     vrfs: List[str] = []
     tables: List[Dict[str, Any]] = []
     ifaces: List[str] = []
+    seen_tables: set = set()
 
     if db_path and db_path.is_file():
         conn = storage.connect(db_path)
@@ -672,8 +694,33 @@ def list_scopes(db_path: Optional[Path] = None) -> Dict[str, Any]:
             for v in storage.list_satellite_vrf_names(conn):
                 if v and v not in vrfs:
                     vrfs.append(v)
+            for row in storage.list_static_routes(conn):
+                tid = int(row.table_id or 0)
+                if tid > 0 and tid not in seen_tables:
+                    seen_tables.add(tid)
+                    tables.append({"id": tid, "name": str(tid)})
+                dev = (row.egress_iface or "").strip()
+                if dev and _IFACE_RE.match(dev) and dev not in ifaces:
+                    ifaces.append(dev)
         finally:
             conn.close()
+
+    if db_only:
+        for known in (2110, 2111, 254, 255):
+            if known not in seen_tables:
+                tables.append({"id": known, "name": str(known)})
+        for env_key, env_var in (
+            ("MTR_OP_DOWNSTREAM_IFACE", "eno1np0"),
+            ("MTR_BGP_RR_UPLINK_IFACE", "enp59s0f0np0"),
+        ):
+            dev = (os.environ.get(env_key) or env_var).strip()
+            if dev and _IFACE_RE.match(dev) and dev not in ifaces:
+                ifaces.append(dev)
+        return {
+            "vrfs": sorted(vrfs),
+            "tables": sorted(tables, key=lambda x: x["id"]),
+            "ifaces": sorted(set(ifaces)),
+        }
 
     try:
         from . import kernel_vrf
@@ -689,7 +736,7 @@ def list_scopes(db_path: Optional[Path] = None) -> Dict[str, Any]:
         pass
 
     rc, out = _run(["ip", "-4", "rule", "list"], timeout=8.0)
-    seen_tables: set = set()
+    seen_tables = {t["id"] for t in tables}
     if rc == 0:
         for line in out.splitlines():
             m = re.search(r"\blookup\s+(\d+)\b", line)
@@ -716,11 +763,15 @@ def list_scopes(db_path: Optional[Path] = None) -> Dict[str, Any]:
     return {"vrfs": sorted(vrfs), "tables": sorted(tables, key=lambda x: x["id"]), "ifaces": ifaces}
 
 
-def enrich_route(route: storage.StaticRoute, db_path: Path, reconcile: bool = True) -> Dict[str, Any]:
+def enrich_route(route: storage.StaticRoute, db_path: Path, reconcile: bool = False) -> Dict[str, Any]:
     d = route_to_dict(route)
     d["created_at"] = route.created_at
     d["updated_at"] = route.updated_at
     d["preview_cmds"] = build_preview_cmds(route)
-    d["kernel_line"] = kernel_line_for(route) if reconcile else None
-    d["sync_state"] = reconcile_one(route, db_path) if reconcile else "unknown"
+    if reconcile:
+        d["kernel_line"] = kernel_line_for(route)
+        d["sync_state"] = reconcile_one(route, db_path, kernel_line=d["kernel_line"])
+    else:
+        d["kernel_line"] = None
+        d["sync_state"] = reconcile_one_db(route, db_path)
     return d

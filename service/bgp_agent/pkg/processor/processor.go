@@ -52,6 +52,8 @@ type Processor struct {
 	pendingWrites chan *Route
 	batchSize     int
 	flushInterval time.Duration
+
+	ribHook RibChangeHook
 }
 
 // NewProcessor 创建处理器
@@ -68,17 +70,17 @@ func NewProcessor(storage Storage) *Processor {
 	}
 }
 
+// SetRibChangeHook 注册 RIB→FIB 变更回调。
+func (p *Processor) SetRibChangeHook(h RibChangeHook) {
+	p.ribHook = h
+}
+
 // Start 启动处理器
 func (p *Processor) Start(ctx context.Context) error {
-	// 从RocksDB恢复路由
-	if err := p.restoreFromDisk(ctx); err != nil {
-		log.Printf("从磁盘恢复路由失败: %v", err)
-	}
-	
-	// 启动批量写入协程
+	// 不再从 flat RIB 全表恢复进内存（百万级由 Peer RIB/FIB 持久化承担）
 	go p.batchWriteLoop(ctx)
 	
-	log.Printf("Route Processor已启动，已恢复 %d 条路由", len(p.routes))
+	log.Printf("Route Processor已启动")
 	return nil
 }
 
@@ -302,10 +304,15 @@ func (p *Processor) SetDownstreamPeerConnected(vrf, neighbor string, connected b
 }
 
 // IsDownstreamPeerConnected 下游 peer 是否 Established。
+// 未写入状态前（Agent 刚启动、peer_watch 尚未刷态）按可达处理，避免 FIB 全空。
 func (p *Processor) IsDownstreamPeerConnected(vrf, neighbor string) bool {
 	p.dsMu.RLock()
 	defer p.dsMu.RUnlock()
-	return p.downstreamPeerUp[dsPeerKey(vrf, neighbor)]
+	connected, ok := p.downstreamPeerUp[dsPeerKey(vrf, neighbor)]
+	if !ok {
+		return true
+	}
+	return connected
 }
 
 // GetRouteCount 获取路由数量

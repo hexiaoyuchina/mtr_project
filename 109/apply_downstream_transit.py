@@ -3,7 +3,7 @@
 现网 109：下联进、上联出；回程对称：上联进 table 2111、下联出（不经管理口 default）。
 
 - 去程 table 2110：iif 下联 lookup → default via RR 从上联出
-- 回程 table 2111：105.92/30 dev 下联（勿 via 208）；pref 29 to 客户端段 lookup 2111
+- 回程 table 2111：105.92/30 dev 下联（勿 via 208）；pref 29 iif 上联 lookup 2111（与 pref30 对称，可 env 改回 to 网段）
 - 客户端源 IP（如 105.94）静态邻居：MAC 取下联 peer(208) 的 lladdr，避免 ARP INCOMPLETE
 
 用法：
@@ -60,9 +60,14 @@ def remote_script(mode: str) -> str:
     ret_prefix = os.environ.get("MTR_DOWNSTREAM_RETURN_PREFIX", "139.159.105.92/30")
     pref = os.environ.get("MTR_DOWNSTREAM_TRANSIT_RULE_PREF", "30")
     to_client_pref = os.environ.get("MTR_DOWNSTREAM_TO_CLIENT_RULE_PREF", "29")
+    ret_rule_style = os.environ.get("MTR_DOWNSTREAM_RETURN_RULE_STYLE", "iif").strip().lower()
     persist = os.environ.get(
         "MTR_DOWNSTREAM_TRANSIT_PERSIST",
         "/usr/local/sbin/mtr-op-downstream-transit.sh",
+    )
+    stealth_persist = os.environ.get(
+        "MTR_INBOUND_STEALTH_PERSIST",
+        "/usr/local/sbin/mtr-op-inbound-trace-stealth.sh",
     )
     down_addr = os.environ.get("MTR_DOWNSTREAM_ADDR", "139.159.43.209/24")
     neigh_hosts = client_neigh_hosts()
@@ -80,13 +85,21 @@ RET_TABLE={ret_table!r}
 RET_PREFIX={ret_prefix!r}
 PREF={pref!r}
 TO_CLIENT_PREF={to_client_pref!r}
+RET_RULE_STYLE={ret_rule_style!r}
 PERSIST={persist!r}
+STEALTH_PERSIST={stealth_persist!r}
 DOWN_ADDR={down_addr!r}
 NEIGH_HOSTS={neigh_hosts!r}
 
-teardown_return() {{
+purge_return_rules() {{
   while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref "$TO_CLIENT_PREF" iif "$UP" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref "$TO_CLIENT_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
   while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+}}
+
+teardown_return() {{
+  purge_return_rules
   for h in $NEIGH_HOSTS; do
     while ip -4 rule del pref "$TO_CLIENT_PREF" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
     while ip -4 rule del pref 31 iif "$UP" to "$h/32" lookup "$RET_TABLE" 2>/dev/null; do :; done
@@ -119,7 +132,7 @@ apply_downstream_addr() {{
 
 apply_forward_routes() {{
   ip route replace table "$FWD_TABLE" "$PEER/32" dev "$DOWN" scope link
-  ip route replace table "$FWD_TABLE" 139.159.43.0/24 dev "$DOWN" scope link
+  ip route replace table "$FWD_TABLE" 139.159.43.0/24 dev "$UP" scope link
   ip route replace table "$FWD_TABLE" default via "$RR" dev "$UP" src "$SRC"
 }}
 
@@ -147,9 +160,18 @@ apply_forward_rule() {{
 }}
 
 apply_return_rules() {{
-  while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
-  while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
-  ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
+  purge_return_rules
+  case "$RET_RULE_STYLE" in
+    to)
+      ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
+      ;;
+    iif_to)
+      ip -4 rule add pref "$TO_CLIENT_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE"
+      ;;
+    iif|*)
+      ip -4 rule add pref "$TO_CLIENT_PREF" iif "$UP" lookup "$RET_TABLE"
+      ;;
+  esac
 }}
 
 apply_client_neigh() {{
@@ -200,8 +222,23 @@ RET_TABLE=__RET_TABLE__
 RET_PREFIX=__RET_PREFIX__
 PREF=__PREF__
 TO_CLIENT_PREF=__TO_CLIENT_PREF__
+RET_RULE_STYLE=__RET_RULE_STYLE__
 DOWN_ADDR=__DOWN_ADDR__
 NEIGH_HOSTS=__NEIGH_HOSTS__
+purge_return_rules() {{
+  while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref "$TO_CLIENT_PREF" iif "$UP" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref "$TO_CLIENT_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+  while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
+}}
+apply_return_rules() {{
+  purge_return_rules
+  case "$RET_RULE_STYLE" in
+    to) ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" ;;
+    iif_to) ip -4 rule add pref "$TO_CLIENT_PREF" iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" ;;
+    iif|*) ip -4 rule add pref "$TO_CLIENT_PREF" iif "$UP" lookup "$RET_TABLE" ;;
+  esac
+}}
 [ -d "/sys/class/net/$DOWN" ] || exit 0
 [ -d "/sys/class/net/$UP" ] || exit 0
 if [ -n "$DOWN_ADDR" ]; then
@@ -216,17 +253,18 @@ ip route replace "$PEER/32" dev "$DOWN" scope link
 ip -4 rule del pref "$PREF" 2>/dev/null || true
 while ip -4 rule del from "$PEER/32" iif "$DOWN" 2>/dev/null; do :; done
 ip -4 rule add pref "$PREF" iif "$DOWN" lookup "$FWD_TABLE"
-while ip -4 rule del pref 31 iif "$UP" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
-while ip -4 rule del pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE" 2>/dev/null; do :; done
-ip -4 rule add pref "$TO_CLIENT_PREF" to "$RET_PREFIX" lookup "$RET_TABLE"
+purge_return_rules
+apply_return_rules
 MAC=$(ip neigh show dev "$DOWN" 2>/dev/null | awk -v p="$PEER" '$1 == p {{print $3; exit}}')
 if [ -n "$MAC" ] && [ "$MAC" != "FAILED" ] && [ "$MAC" != "INCOMPLETE" ]; then
   for h in $NEIGH_HOSTS; do
     ip neigh replace "$h" lladdr "$MAC" dev "$DOWN" nud permanent
   done
 fi
+STEALTH=__STEALTH_PERSIST__
+[ -x "$STEALTH" ] && "$STEALTH"
 EOS
-  sed -i "s|__DOWN__|$DOWN|g; s|__UP__|$UP|g; s|__PEER__|$PEER|g; s|__RR__|$RR|g; s|__SRC__|$SRC|g; s|__FWD_TABLE__|$fwd_table|g; s|__RET_TABLE__|$ret_table|g; s|__RET_PREFIX__|$ret_prefix|g; s|__PREF__|$pref|g; s|__TO_CLIENT_PREF__|$to_client_pref|g; s|__DOWN_ADDR__|$down_addr|g; s|__NEIGH_HOSTS__|$neigh_hosts|g" "$PERSIST"
+  sed -i "s|__DOWN__|$DOWN|g; s|__UP__|$UP|g; s|__PEER__|$PEER|g; s|__RR__|$RR|g; s|__SRC__|$SRC|g; s|__FWD_TABLE__|$fwd_table|g; s|__RET_TABLE__|$ret_table|g; s|__RET_PREFIX__|$ret_prefix|g; s|__PREF__|$pref|g; s|__TO_CLIENT_PREF__|$to_client_pref|g; s|__RET_RULE_STYLE__|$ret_rule_style|g; s|__DOWN_ADDR__|$down_addr|g; s|__NEIGH_HOSTS__|$neigh_hosts|g; s|__STEALTH_PERSIST__|$stealth_persist|g" "$PERSIST"
   chmod +x "$PERSIST"
   echo "persist -> $PERSIST"
 }}

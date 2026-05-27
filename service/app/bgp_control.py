@@ -422,6 +422,11 @@ def _iter_meta(conn) -> List[Tuple[str, str, str, str, str]]:
     return out
 
 
+def iter_bgp_neighbor_meta(conn) -> List[Tuple[str, str, str, str, str]]:
+    """公开迭代器：SQLite bgp_neighbor_meta 全表（vrf, nip, role, note, source_ip）。"""
+    return _iter_meta(conn)
+
+
 def list_vrfs_from_meta(conn) -> List[str]:
     vrfs = set()
     for vrf, _nip, _r, _n, _s in _iter_meta(conn):

@@ -188,6 +188,9 @@ def main() -> None:
         sys.exit(2)
 
     load_env_file(ROOT / "109" / "env")
+    os.environ.setdefault("MTR_FIB_KERNEL_TABLE_UPSTREAM", "2110")
+    os.environ.setdefault("MTR_FIB_KERNEL_TABLE_DOWNSTREAM", "2111")
+    os.environ.setdefault("MTR_FIB_KERNEL_BATCH_SIZE", "5000")
     service_dir = ROOT / "service"
     te_nfq = ROOT / "scripts" / "te_rewrite_nfqueue.py"
     nft_admin_acl = ROOT / "scripts" / "nft_mtr_admin_acl.nft"

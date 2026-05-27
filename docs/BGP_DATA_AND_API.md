@@ -4,7 +4,7 @@
 
 现网：**§2** 百万 RIB = Agent **Redis/RocksDB** 按 peer；SQLite = 邻居 meta / freeze；学习路由 **读 Agent**。
 
-> **目标态变更摘要**见 [BGP_FIB_TARGET.md §13](./BGP_FIB_TARGET.md#13-现网文档api-目标态变更摘要)：`store_received_routes` / `advertise_routes` 及对应 API、UI 按钮 **将删除**。
+> **目标态（已实现）**：`store_received_routes` / `advertise_routes` UI 与开关已移除；enabled 邻居自动入库 + FIB diff 通告。
 
 默认 OP 库文件由 `MTR_DB` 指定（常见 `/root/mtr_op/data.db`），schema 在 `service/app/storage.py` 的 `init_schema` 中初始化。Agent 侧 RIB 见 `GET /api/routes`、`GET /api/storage/stats`（`:9179`）。
 
@@ -256,4 +256,18 @@ _async_apply_bgp_route_advertise
         └─ 目标下游 ──► POST /api/tx/routes   (vrf + routes[])
 ```
 
-任务状态键：`{vrf}-{neighbor_ip}-advertise`，查询 `GET .../advertise/status`。
+任务状态键：`{vrf}-{neighbor_ip}-advertise`，查询 `GET .../advertise/status`（**目标态已废弃**，改 FIB export）。
+
+---
+
+## 8. Agent FIB / Export API（目标态，`:9179`）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/fib/routes?window=&page=&page_size=` | upstream/downstream FIB 分页 |
+| GET | `/api/fib/routes/count?window=` | FIB 条数 O(1) |
+| POST | `/api/fib/recompute?window=` | 运维全量重算 |
+| POST | `/api/export/reconcile` | 启动/部署后 enabled 会话 FIB diff |
+| POST | `/api/rib/purge-peer?window=&vrf=&neighbor_ip=&source_ip=` | 删邻居 purge RIB |
+
+下游 RIB 查询增加 `source_ip`（多身份同对端）。OP 新增邻居自动 `ingest-peer` + export reconcile；`MTR_BGP_RIB_SYNC` 默认 **关**。

@@ -1319,7 +1319,7 @@ def lookup_bgp_neighbor_meta_for_nexthop(conn: sqlite3.Connection, vrf: str, nex
     return ("", "unknown")
 
 
-def upsert_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str, neighbor_ip: str, role: str, note: str = "", source_ip: str = "", advertise_routes: int = 0, advertise_routes_from: str = "") -> None:
+def upsert_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str, neighbor_ip: str, role: str, note: str = "", source_ip: str = "", advertise_routes: int = 0, advertise_routes_from: str = "", store_received_routes: Optional[int] = None) -> None:
     v = validate_vrf_name(vrf)
     nip = validate_ipv4(neighbor_ip)
     r = str(role).strip().lower() if role else "unknown"
@@ -1328,12 +1328,20 @@ def upsert_bgp_neighbor_meta(conn: sqlite3.Connection, vrf: str, neighbor_ip: st
     sip = str(source_ip or "").strip()
     ar = int(advertise_routes) if advertise_routes else 0
     arf = str(advertise_routes_from or "").strip()
+    if store_received_routes is None:
+        existing = get_bgp_neighbor_store_received_routes(conn, v, nip)
+        sr = existing if existing else 1
+    else:
+        sr = 1 if store_received_routes else 0
     conn.execute(
         """
-        INSERT OR REPLACE INTO bgp_neighbor_meta (vrf, neighbor_ip, role, note, source_ip, advertise_routes, advertise_routes_from, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT OR REPLACE INTO bgp_neighbor_meta (vrf, neighbor_ip, role, note, source_ip, advertise_routes, advertise_routes_from, store_received_routes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(
+            (SELECT created_at FROM bgp_neighbor_meta WHERE vrf = ? AND neighbor_ip = ?),
+            datetime('now')
+        ))
         """,
-        (v, nip, r, note, sip, ar, arf),
+        (v, nip, r, note, sip, ar, arf, sr, v, nip),
     )
     conn.commit()
 

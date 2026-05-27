@@ -53,9 +53,9 @@ RR={RR!r}
 SRC={SRC!r}
 CLIENT={CLIENT!r}
 
-# 2110 去程
+# 2110 去程（43.0/24 走上联 dev，供 FIB via 206/249 解析；208/32 仍走下联）
 ip route replace table 2110 "$PEER/32" dev "$DOWN" scope link
-ip route replace table 2110 139.159.43.0/24 dev "$DOWN" scope link
+ip route replace table 2110 139.159.43.0/24 dev "$UP" scope link
 ip route replace table 2110 default via "$RR" dev "$UP" src "$SRC"
 
 # 2111 回程（无 via）

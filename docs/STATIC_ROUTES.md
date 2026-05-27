@@ -30,7 +30,9 @@ OP 提供可编辑的静态路由条目，通过 `ip route replace` 写入 **mai
 | 方法 | 路径 |
 |------|------|
 | GET | `/api/static-routes/scopes` |
-| GET | `/api/static-routes?reconcile=1` |
+| GET | `/api/static-routes`（默认仅库 + 下发状态文件，快） |
+| GET | `/api/static-routes?reconcile=1` | 逐条查内核 FIB（慢，大表慎用） |
+| GET | `/api/static-routes/scopes?db_only=1` | 下拉选项仅库，不扫 `ip rule` |
 | POST/PATCH/DELETE | `/api/static-routes` |
 | POST | `/api/static-routes/apply` |
 | POST | `/api/static-routes/probe` |

@@ -28,14 +28,30 @@ def sync_peer_rib_policy(
     neighbor_ip: str,
     role: str,
     store_received_routes: int,
+    source_ip: str = "",
+    enabled: Optional[bool] = None,
 ) -> None:
+    """将 SQLite meta 中的邻居策略下发到 Agent Redis（peer:policy:*）。"""
     bgp_control.require_agent()
     window = peer_route_window(role)
+    en = bool(store_received_routes) if enabled is None else bool(enabled)
+    sr = en if enabled is not None else bool(store_received_routes)
+    sip = (source_ip or "").strip()
+    if window == "downstream" and sip:
+        sip = storage.validate_ipv4(sip)
+    participate_fib = True
+    if window == "upstream":
+        participate_fib = True
+    elif en is False:
+        participate_fib = False
     body = {
         "vrf": storage.validate_vrf_name(vrf),
         "neighbor_ip": storage.validate_ipv4(neighbor_ip),
         "window": window,
-        "store_routes": bool(store_received_routes),
+        "store_routes": sr,
+        "enabled": en,
+        "source_ip": sip,
+        "participate_fib": participate_fib,
     }
     with bgp_control._client() as c:
         r = c.post("/api/rib/policy", json=body, timeout=30.0)
@@ -43,17 +59,111 @@ def sync_peer_rib_policy(
             raise RuntimeError(r.text or f"HTTP {r.status_code}")
 
 
-def count_peer_rib_routes(vrf: str, neighbor_ip: str, role: str) -> int:
-    bgp_control.require_agent()
+def sync_peer_policy_from_meta(
+    conn,
+    vrf: str,
+    neighbor_ip: str,
+    *,
+    enabled: Optional[bool] = None,
+) -> None:
+    """按 SQLite bgp_neighbor_meta 单行同步 Agent policy（以库为准）。"""
+    v = storage.validate_vrf_name(vrf)
+    ip = storage.validate_ipv4(neighbor_ip)
+    meta = storage.get_bgp_neighbor_meta_map(conn, v).get(ip)
+    role = (meta[0] if meta else "unknown") or "unknown"
+    sip = (meta[2] if meta and len(meta) > 2 else "") or ""
+    if not sip:
+        try:
+            row = next(
+                (
+                    r
+                    for r in bgp_control.list_agent_neighbors()
+                    if storage.validate_vrf_name(str(r.get("vrf") or "")) == v
+                    and str(r.get("address") or "").strip() == ip
+                ),
+                None,
+            )
+            if row:
+                sip = str(row.get("local_address") or "").strip()
+                if enabled is None:
+                    enabled = bool(row.get("enabled", True))
+        except Exception:
+            pass
+    sr = storage.get_bgp_neighbor_store_received_routes(conn, v, ip)
+    if sr == 0 and (enabled is None or enabled):
+        sr = 1
+    sync_peer_rib_policy(v, ip, role, sr, sip, enabled if enabled is not None else bool(sr))
+
+
+def sync_all_peer_policies_from_sqlite(conn) -> Dict[str, Any]:
+    """部署/恢复：把 SQLite 全部邻居 meta 同步到 Agent Redis policy。"""
+    synced: List[str] = []
+    errors: List[str] = []
+    try:
+        bgp_control.require_agent()
+    except Exception as e:
+        return {"synced": synced, "errors": [str(e)]}
+    agent_by_key: Dict[tuple[str, str], Dict[str, Any]] = {}
+    try:
+        for row in bgp_control.list_agent_neighbors():
+            v = storage.validate_vrf_name(str(row.get("vrf") or "default"))
+            addr = str(row.get("address") or "").strip()
+            if not addr:
+                continue
+            try:
+                ip = storage.validate_ipv4(addr)
+            except ValueError:
+                continue
+            agent_by_key[(v, ip)] = row
+    except Exception as e:
+        logger.warning("sync policies: list agent neighbors: %s", e)
+    for vrf, nip, role, _note, src in bgp_control.iter_bgp_neighbor_meta(conn):
+        try:
+            v = storage.validate_vrf_name(vrf)
+            ip = storage.validate_ipv4(nip)
+            row = agent_by_key.get((v, ip), {})
+            enabled = bool(row.get("enabled", True))
+            sr = storage.get_bgp_neighbor_store_received_routes(conn, v, ip)
+            if sr == 0 and enabled:
+                sr = 1
+            sip = (src or "").strip() or str(row.get("local_address") or "").strip()
+            sync_peer_rib_policy(v, ip, role, sr, sip, enabled)
+            synced.append(f"{v}:{ip}")
+        except Exception as e:
+            errors.append(f"{vrf}:{nip}:{e}")
+            logger.warning("sync policy %s/%s: %s", vrf, nip, e)
+    return {"synced": synced, "errors": errors}
+
+
+def _rib_query_params(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    source_ip: str = "",
+) -> Dict[str, str]:
     window = peer_route_window(role)
+    params: Dict[str, str] = {
+        "window": window,
+        "vrf": storage.validate_vrf_name(vrf),
+        "neighbor_ip": storage.validate_ipv4(neighbor_ip),
+    }
+    sip = (source_ip or "").strip()
+    if window == "downstream" and sip:
+        params["source_ip"] = storage.validate_ipv4(sip)
+    return params
+
+
+def count_peer_rib_routes(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    source_ip: str = "",
+) -> int:
+    bgp_control.require_agent()
     with bgp_control._client() as c:
         r = c.get(
             "/api/rib/routes/count",
-            params={
-                "window": window,
-                "vrf": storage.validate_vrf_name(vrf),
-                "neighbor_ip": storage.validate_ipv4(neighbor_ip),
-            },
+            params=_rib_query_params(vrf, neighbor_ip, role, source_ip),
             timeout=60.0,
         )
         r.raise_for_status()
@@ -108,6 +218,7 @@ def get_peer_rib_route(
     neighbor_ip: str,
     role: str,
     prefix: str,
+    source_ip: str = "",
 ) -> Optional[Dict[str, Any]]:
     """按前缀精确查询；新 Agent 走 Redis O(1)，旧 Agent 回退分页扫描。"""
     bgp_control.require_agent()
@@ -115,15 +226,12 @@ def get_peer_rib_route(
     pfx = prefix.strip()
     if not pfx:
         return None
+    params = _rib_query_params(vrf, neighbor_ip, role, source_ip)
+    params["prefix"] = pfx
     with bgp_control._client() as c:
         r = c.get(
             "/api/rib/routes",
-            params={
-                "window": window,
-                "vrf": storage.validate_vrf_name(vrf),
-                "neighbor_ip": storage.validate_ipv4(neighbor_ip),
-                "prefix": pfx,
-            },
+            params=params,
             timeout=120.0,
         )
         r.raise_for_status()
@@ -149,19 +257,16 @@ def list_peer_rib_routes_page(
     role: str,
     page: int = 1,
     page_size: int = 100,
+    source_ip: str = "",
 ) -> Dict[str, Any]:
     bgp_control.require_agent()
-    window = peer_route_window(role)
+    params = _rib_query_params(vrf, neighbor_ip, role, source_ip)
+    params["page"] = str(max(1, page))
+    params["page_size"] = str(min(5000, max(1, page_size)))
     with bgp_control._client() as c:
         r = c.get(
             "/api/rib/routes",
-            params={
-                "window": window,
-                "vrf": storage.validate_vrf_name(vrf),
-                "neighbor_ip": storage.validate_ipv4(neighbor_ip),
-                "page": max(1, page),
-                "page_size": min(5000, max(1, page_size)),
-            },
+            params=params,
             timeout=120.0,
         )
         r.raise_for_status()
@@ -174,6 +279,7 @@ def list_peer_rib_routes_slice(
     role: str,
     start_offset: int,
     limit: int,
+    source_ip: str = "",
 ) -> List[Dict[str, Any]]:
     """从某 peer 持久库指定偏移起读取最多 limit 条。"""
     if limit <= 0 or start_offset < 0:
@@ -184,7 +290,7 @@ def list_peer_rib_routes_slice(
     out: List[Dict[str, Any]] = []
     while len(out) < limit:
         data = list_peer_rib_routes_page(
-            vrf, neighbor_ip, role, page=page, page_size=chunk_size
+            vrf, neighbor_ip, role, page=page, page_size=chunk_size, source_ip=source_ip
         )
         routes = list(data.get("routes") or [])
         if skip:
@@ -201,18 +307,18 @@ def list_peer_rib_routes_slice(
 
 
 def list_merged_rib_routes_page(
-    peers: List[Tuple[str, str, str]],
+    peers: List[Tuple[str, str, str, str]],
     page: int = 1,
     page_size: int = 100,
 ) -> Dict[str, Any]:
-    """多 peer 合并分页（peers 建议已排序）。"""
+    """多 peer 合并分页（peers: vrf, neighbor_ip, role, source_ip）。"""
     page = max(1, page)
     page_size = min(5000, max(1, page_size))
     counts: List[int] = []
     total = 0
-    for vrf, nip, role in peers:
+    for vrf, nip, role, sip in peers:
         try:
-            c = count_peer_rib_routes(vrf, nip, role)
+            c = count_peer_rib_routes(vrf, nip, role, sip)
         except Exception:
             c = 0
         counts.append(c)
@@ -222,7 +328,7 @@ def list_merged_rib_routes_page(
     remaining_skip = global_offset
     merged: List[Dict[str, Any]] = []
 
-    for (vrf, nip, role), cnt in zip(peers, counts):
+    for (vrf, nip, role, sip), cnt in zip(peers, counts):
         if len(merged) >= page_size:
             break
         if remaining_skip >= cnt:
@@ -231,7 +337,7 @@ def list_merged_rib_routes_page(
         peer_offset = remaining_skip
         remaining_skip = 0
         need = page_size - len(merged)
-        chunk = list_peer_rib_routes_slice(vrf, nip, role, peer_offset, need)
+        chunk = list_peer_rib_routes_slice(vrf, nip, role, peer_offset, need, sip)
         rw = peer_route_window(role)
         for item in chunk:
             merged.append(
@@ -298,60 +404,94 @@ def ingest_downstream_peer_routes(vrf: str, neighbor_ip: str) -> Dict[str, Any]:
     return ingest_peer_routes(vrf, neighbor_ip, "downstream")
 
 
-def start_rib_advertise_job(
-    task_id: str,
-    src_window: str,
-    src_vrf: str,
-    src_neighbor_ip: str,
-    *,
-    target: str,
-    target_vrf: str = "",
-    enable: bool = True,
-    batch_size: int = 5000,
-    src_peers: Optional[List[Dict[str, str]]] = None,
+def ensure_peer_enabled_policy(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    source_ip: str = "",
+) -> None:
+    """enabled 邻居默认入库（目标架构：无 store_routes 开关）。"""
+    sync_peer_rib_policy(vrf, neighbor_ip, role, 1, source_ip, True)
+
+
+def purge_peer_rib(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    source_ip: str = "",
 ) -> Dict[str, Any]:
-    """启动 Agent 流式通告/撤销任务（IteratePeerRoutes，非分页 HTTP）。"""
     bgp_control.require_agent()
-    body: Dict[str, Any] = {
-        "task_id": task_id,
-        "target": target,
-        "target_vrf": storage.validate_vrf_name(target_vrf) if target_vrf else "",
-        "enable": bool(enable),
-        "batch_size": batch_size,
+    window = peer_route_window(role)
+    params: Dict[str, str] = {
+        "window": window,
+        "vrf": storage.validate_vrf_name(vrf),
+        "neighbor_ip": storage.validate_ipv4(neighbor_ip),
     }
-    if src_peers:
-        body["src_peers"] = [
-            {
-                "window": str(p.get("window") or "downstream"),
-                "vrf": storage.validate_vrf_name(str(p["vrf"])),
-                "neighbor_ip": storage.validate_ipv4(str(p["neighbor_ip"])),
-            }
-            for p in src_peers
-        ]
-    else:
-        body["src_window"] = src_window
-        body["src_vrf"] = storage.validate_vrf_name(src_vrf)
-        body["src_neighbor_ip"] = storage.validate_ipv4(src_neighbor_ip)
-    path = "/api/rib/advertise" if enable else "/api/rib/withdraw"
+    if source_ip.strip():
+        params["source_ip"] = storage.validate_ipv4(source_ip.strip())
     with bgp_control._client() as c:
-        r = c.post(path, json=body, timeout=60.0)
-        if r.status_code == 409:
-            raise RuntimeError("rib_advertise_task_running")
+        r = c.post("/api/rib/purge-peer", params=params, timeout=600.0)
         if r.status_code >= 400:
             raise RuntimeError(r.text or f"HTTP {r.status_code}")
         return r.json() or {}
 
 
-def get_rib_advertise_status(task_id: str) -> Dict[str, Any]:
+def export_reconcile() -> Dict[str, Any]:
+    """Agent 启动后 FIB diff reconcile（替代全量 advertise 扫库）。"""
     bgp_control.require_agent()
     with bgp_control._client() as c:
-        r = c.get(
-            "/api/rib/advertise/status",
-            params={"task_id": task_id},
-            timeout=30.0,
-        )
-        if r.status_code == 404:
-            return {"status": "idle", "task_id": task_id}
+        r = c.post("/api/export/reconcile", timeout=30.0)
+        if r.status_code >= 400:
+            raise RuntimeError(r.text or f"HTTP {r.status_code}")
+        return r.json() or {}
+
+
+def pipeline_consistency() -> Dict[str, Any]:
+    bgp_control.require_agent()
+    with bgp_control._client() as c:
+        r = c.get("/api/pipeline/consistency", timeout=30.0)
+        if r.status_code >= 400:
+            raise RuntimeError(r.text or f"HTTP {r.status_code}")
+        return r.json() or {}
+
+
+def pipeline_repair(window: str) -> Dict[str, Any]:
+    bgp_control.require_agent()
+    w = (window or "upstream").strip()
+    with bgp_control._client() as c:
+        r = c.post(f"/api/pipeline/repair?window={w}", timeout=30.0)
+        if r.status_code >= 400:
+            raise RuntimeError(r.text or f"HTTP {r.status_code}")
+        return r.json() or {}
+
+
+def pipeline_job_status(job_id: str) -> Dict[str, Any]:
+    bgp_control.require_agent()
+    jid = (job_id or "").strip()
+    with bgp_control._client() as c:
+        r = c.get(f"/api/pipeline/status?job_id={jid}", timeout=30.0)
+        if r.status_code >= 400:
+            raise RuntimeError(r.text or f"HTTP {r.status_code}")
+        return r.json() or {}
+
+
+def ingest_peer_routes_with_source(
+    vrf: str,
+    neighbor_ip: str,
+    role: str,
+    source_ip: str = "",
+) -> Dict[str, Any]:
+    bgp_control.require_agent()
+    window = peer_route_window(role)
+    params: Dict[str, str] = {
+        "window": window,
+        "vrf": storage.validate_vrf_name(vrf),
+        "neighbor_ip": storage.validate_ipv4(neighbor_ip),
+    }
+    if source_ip.strip():
+        params["source_ip"] = storage.validate_ipv4(source_ip.strip())
+    with bgp_control._client() as c:
+        r = c.post("/api/rib/ingest-peer", params=params, timeout=_ingest_timeout())
         if r.status_code >= 400:
             raise RuntimeError(r.text or f"HTTP {r.status_code}")
         return r.json() or {}

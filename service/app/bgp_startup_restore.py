@@ -113,52 +113,52 @@ def _reconcile_ipvlan_peers(conn: sqlite3.Connection) -> List[str]:
     return steps
 
 
-def _rr_aggregate_spoof_ip(rr_neighbor: str) -> str:
-    env = (os.environ.get("BGP_AGGREGATE_SPOOF_IP") or os.environ.get("RR_ADDR") or "").strip()
-    if env:
-        return storage.validate_ipv4(env)
-    return storage.validate_ipv4(rr_neighbor)
+def _fib_recompute_windows() -> tuple[str, ...]:
+    raw = (os.environ.get("MTR_BGP_FIB_RECOMPUTE_WINDOWS") or "downstream,upstream").strip()
+    out = tuple(w.strip() for w in raw.split(",") if w.strip())
+    return out or ("downstream", "upstream")
 
 
-def _resume_rr_aggregate_advertise(conn: sqlite3.Connection) -> List[str]:
-    """
-    meta 中已打开「路由通告」的 RR 行：向 Agent 提交 RR 聚合通告任务（不阻塞等待完成）。
-    用于部署/重启后库已灌满但 pfx_adv 仍停留在旧快照的场景。
-    """
-    from . import bgp_peer_rib
+def _pipeline_consistency() -> Dict[str, Any]:
+    base = bgp_control.agent_url()
+    with httpx.Client(timeout=30.0) as c:
+        r = c.get(f"{base}/api/pipeline/consistency")
+        if r.status_code >= 400:
+            raise RuntimeError(r.text or f"HTTP {r.status_code}")
+        return r.json() or {}
 
-    started: List[str] = []
-    seen_rr: set[str] = set()
-    for vrf, nip, role, _note, _src in bgp_control._iter_meta(conn):
-        if not bgp_control.is_rr_role(role):
-            continue
-        if nip in seen_rr:
-            continue
-        meta = storage.get_bgp_neighbor_meta_map(conn, vrf).get(nip)
-        if not meta or not int(meta[3] if len(meta) > 3 else 0):
-            continue
-        seen_rr.add(nip)
-        spoof = _rr_aggregate_spoof_ip(nip)
-        peers = storage.get_downstream_neighbors(conn, spoof)
-        if not peers:
-            logger.info("resume rr advertise %s: no downstream for source_ip=%s", nip, spoof)
-            continue
-        task_id = f"{storage.validate_vrf_name(vrf)}-{storage.validate_ipv4(nip)}-advertise"
-        src_peers = [{"window": "downstream", "vrf": v, "neighbor_ip": n} for v, n in peers]
-        try:
-            bgp_peer_rib.start_rib_advertise_job(
-                task_id, "", "", "", target="rr", enable=True, src_peers=src_peers
-            )
-            started.append(f"{vrf}:{nip}:peers={len(peers)}")
-            logger.info(
-                "resume rr aggregate advertise task_id=%s spoof=%s peers=%d",
-                task_id,
-                spoof,
-                len(peers),
-            )
-        except Exception as e:
-            logger.warning("resume rr advertise %s failed: %s", nip, e)
-    return started
+
+def _pipeline_repair_windows(windows: tuple[str, ...]) -> Dict[str, Any]:
+    base = bgp_control.agent_url()
+    out: Dict[str, Any] = {}
+    with httpx.Client(timeout=30.0) as c:
+        for w in windows:
+            try:
+                r = c.post(f"{base}/api/pipeline/repair?window={w}", timeout=30.0)
+                out[w] = r.json() if r.content else {"ok": r.status_code < 400}
+            except Exception as e:
+                out[w] = {"error": str(e)[:200]}
+                logger.warning("pipeline repair %s: %s", w, e)
+    return out
+
+
+def _recompute_agent_fib(windows: tuple[str, ...] = ("downstream",)) -> dict[str, str]:
+    """异步提交 FIB recompute job（legacy 名称保留）。"""
+    out: dict[str, str] = {}
+    base = bgp_control.agent_url()
+    with httpx.Client(timeout=30.0) as c:
+        for w in windows:
+            try:
+                r = c.post(f"{base}/api/fib/recompute?window={w}", timeout=30.0)
+                if r.status_code < 400:
+                    j = r.json() or {}
+                    out[w] = str(j.get("job_id") or "ok")
+                else:
+                    out[w] = r.text[:200]
+            except Exception as e:
+                out[w] = str(e)[:200]
+                logger.warning("fib recompute %s: %s", w, e)
+    return out
 
 
 def restore_from_sqlite(conn: sqlite3.Connection) -> Dict[str, Any]:
@@ -166,6 +166,8 @@ def restore_from_sqlite(conn: sqlite3.Connection) -> Dict[str, Any]:
     从 SQLite 恢复 Agent 侧 BGP（幂等，可重复调用）。
     部署脚本与 OP 启动后台任务均应调用此函数。
     """
+    from . import bgp_peer_rib
+
     summary: Dict[str, Any] = {"ok": False}
     if not wait_agent_healthy():
         summary["error"] = "agent_not_healthy"
@@ -188,6 +190,22 @@ def restore_from_sqlite(conn: sqlite3.Connection) -> Dict[str, Any]:
     summary["rr_configured"] = _configure_rr_from_meta(conn)
     rec = bgp_control.reconcile_meta_to_agent(conn)
     summary["agent_reconcile"] = rec
+    try:
+        summary["agent_policies"] = bgp_peer_rib.sync_all_peer_policies_from_sqlite(conn)
+    except Exception as e:
+        logger.warning("sync agent policies from sqlite: %s", e)
+        summary["agent_policies_error"] = str(e)[:200]
+    try:
+        summary["pipeline_consistency"] = _pipeline_consistency()
+    except Exception as e:
+        logger.warning("pipeline consistency: %s", e)
+        summary["pipeline_consistency_error"] = str(e)[:200]
+    try:
+        repair_windows = _fib_recompute_windows()
+        summary["pipeline_repair"] = _pipeline_repair_windows(repair_windows)
+    except Exception as e:
+        logger.warning("pipeline repair after restore: %s", e)
+        summary["pipeline_repair_error"] = str(e)[:200]
     summary["ipvlan"] = _reconcile_ipvlan_peers(conn)
     if bgp_ipvlan_reconcile.satellite_dnat_enabled():
         try:
@@ -214,11 +232,14 @@ def restore_from_sqlite(conn: sqlite3.Connection) -> Dict[str, Any]:
         "false",
         "no",
     ):
-        try:
-            summary["resume_advertise"] = _resume_rr_aggregate_advertise(conn)
-        except Exception as e:
-            logger.warning("resume rr advertise: %s", e)
-            summary["resume_advertise_error"] = str(e)[:200]
+        if summary.get("pipeline_repair"):
+            summary["export_reconcile"] = {"skipped": "deferred to pipeline fib job"}
+        else:
+            try:
+                summary["export_reconcile"] = bgp_peer_rib.export_reconcile()
+            except Exception as e:
+                logger.warning("export reconcile: %s", e)
+                summary["export_reconcile_error"] = str(e)[:200]
 
     logger.info("bgp restore_from_sqlite: %s", summary)
     return summary

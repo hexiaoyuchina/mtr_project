@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"bgp_agent/pkg/export"
+	"bgp_agent/pkg/fib"
 	"bgp_agent/pkg/rx"
 	"bgp_agent/pkg/tx"
 	"bgp_agent/pkg/processor"
@@ -47,6 +49,11 @@ func main() {
 
 	proc := processor.NewProcessor(store)
 
+	fibEngine := fib.NewEngine(store, proc)
+	fibHook := fib.NewHook(fibEngine)
+	proc.SetRibChangeHook(fibHook)
+	fibEngine.Start(ctx)
+
 	// 启动GoBGP RX（从RR接收路由）
 	rxAgent, err := rx.NewRxAgent(&rx.Config{
 		LocalAS:      uint32(*localAs),
@@ -67,6 +74,8 @@ func main() {
 
 	// 管理 API 先监听，避免 Processor 从 RocksDB 恢复百万路由期间 OP 判定 agent 不可用
 	apiServer := NewAPIServer(*apiAddr, proc, rxAgent, txPool, store)
+	exportCoord := export.NewCoordinator(fibEngine, store, rxAgent, txPool)
+	apiServer.SetFibExport(fibEngine, exportCoord, fibHook)
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			log.Printf("API服务错误: %v", err)
@@ -90,6 +99,11 @@ func main() {
 		}
 	}
 	go apiServer.RunPeerWatch(ctx, time.Duration(watchSec)*time.Second)
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		apiServer.RunStartupRepair(ctx)
+	}()
 
 	log.Printf("BGP Agent运行中，API监听: %s (peer_watch=%ds)", *apiAddr, watchSec)
 

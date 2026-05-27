@@ -2,17 +2,16 @@ package main
 
 import (
 	"context"
-	"log"
 	"strings"
-	"time"
+
+	"bgp_agent/pkg/pipeline"
+	"bgp_agent/pkg/processor"
 )
 
-func ingestPeerKey(window, vrf, neighbor string) string {
-	return window + "|" + vrf + "|" + neighbor
-}
-
-// maybeBackgroundIngestPeer RR/下游 Established 且开启入库时，后台全量灌库（去重并发）。
-func (s *APIServer) maybeBackgroundIngestPeer(window, vrf, neighbor string) {
+func (s *APIServer) maybeBackgroundIngestPeer(window, vrf, neighbor, sourceIP string) {
+	if s.pipeline == nil {
+		return
+	}
 	vrf = strings.TrimSpace(vrf)
 	neighbor = strings.TrimSpace(neighbor)
 	if vrf == "" || neighbor == "" {
@@ -22,56 +21,63 @@ func (s *APIServer) maybeBackgroundIngestPeer(window, vrf, neighbor string) {
 	if !s.storage.ShouldStoreRoutes(ctx, vrf, neighbor) {
 		return
 	}
-	key := ingestPeerKey(window, vrf, neighbor)
-	s.ingestMu.Lock()
-	if s.ingestInflight == nil {
-		s.ingestInflight = make(map[string]bool)
-	}
-	if s.ingestInflight[key] {
-		s.ingestMu.Unlock()
-		return
-	}
-	s.ingestInflight[key] = true
-	s.ingestMu.Unlock()
-
-	go func() {
-		defer func() {
-			s.ingestMu.Lock()
-			delete(s.ingestInflight, key)
-			s.ingestMu.Unlock()
-		}()
-		runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		defer cancel()
-		ingested, removed, err := s.ingestPeerRoutesFromAdjIn(runCtx, window, vrf, neighbor)
-		if err != nil {
-			log.Printf("background ingest %s %s/%s: %v", window, vrf, neighbor, err)
-			return
-		}
-		log.Printf("background ingest %s %s/%s: ingested=%d removed=%d", window, vrf, neighbor, ingested, removed)
-	}()
+	s.pipeline.EnqueueIngest(window, vrf, neighbor, sourceIP)
 }
 
-func (s *APIServer) notePeerEstablished(window, vrf, neighbor string) {
-	s.maybeBackgroundIngestPeer(window, vrf, neighbor)
+func (s *APIServer) notePeerEstablished(window, vrf, neighbor, sourceIP string) {
+	s.maybeBackgroundIngestPeer(window, vrf, neighbor, sourceIP)
 }
 
-// maybeReconcileIngestGap 会话已 Up 但持久库明显少于 Received 时补一次全量灌库。
-func (s *APIServer) maybeReconcileIngestGap(ctx context.Context, window, vrf, neighbor string, pfxRcd uint32) {
-	if pfxRcd == 0 {
+func (s *APIServer) maybeReconcileIngestGap(ctx context.Context, window, vrf, neighbor, sourceIP string, pfxRcd uint32) {
+	if pfxRcd == 0 || s.pipeline == nil {
 		return
 	}
 	if !s.storage.ShouldStoreRoutes(ctx, vrf, neighbor) {
 		return
 	}
-	n, err := s.storage.CountPeerRoutes(ctx, window, vrf, neighbor)
+	if window == processor.WindowDownstream {
+		_, _ = s.storage.MigrateLegacyDownstreamPeerRIB(ctx, vrf, neighbor, sourceIP)
+	}
+	n, err := s.storage.CountPeerRoutes(ctx, window, vrf, neighbor, sourceIP)
 	if err != nil {
 		return
 	}
-	cached := uint64(n)
-	const minGap uint64 = 5000
-	if uint64(pfxRcd) <= cached || uint64(pfxRcd)-cached < minGap {
+	if !pipeline.NeedsPeerIngest(window, pfxRcd, n, pipeline.RibGapMin()) {
 		return
 	}
-	log.Printf("ingest gap %s %s/%s: pfx_rcd=%d cached=%d, scheduling ingest", window, vrf, neighbor, pfxRcd, n)
-	s.maybeBackgroundIngestPeer(window, vrf, neighbor)
+	s.pipeline.EnqueueIngest(window, vrf, neighbor, sourceIP)
+}
+
+func (s *APIServer) listPeerSnapshots(ctx context.Context) []pipeline.PeerSnapshot {
+	var out []pipeline.PeerSnapshot
+	rrPeers, _ := s.rxAgent.ListRRPeers(ctx)
+	for _, p := range rrPeers {
+		if strings.TrimSpace(p.Address) == "" {
+			continue
+		}
+		n, _ := s.storage.CountPeerRoutes(ctx, processor.WindowUpstream, processor.VRFGobgpRR, p.Address, p.LocalAddress)
+		out = append(out, pipeline.PeerSnapshot{
+			Window:      processor.WindowUpstream,
+			VRF:         processor.VRFGobgpRR,
+			NeighborIP:  p.Address,
+			SourceIP:    p.LocalAddress,
+			PfxRcd:      p.PfxRcd,
+			RibCount:    n,
+			Established: strings.Contains(strings.ToUpper(p.State), "ESTABLISHED"),
+		})
+	}
+	txPeers, _ := s.txPool.ListAllPeers(ctx)
+	for _, p := range txPeers {
+		n, _ := s.storage.CountPeerRoutes(ctx, processor.WindowDownstream, p.Vrf, p.Address, p.LocalAddress)
+		out = append(out, pipeline.PeerSnapshot{
+			Window:      processor.WindowDownstream,
+			VRF:         p.Vrf,
+			NeighborIP:  p.Address,
+			SourceIP:    p.LocalAddress,
+			PfxRcd:      p.PfxRcd,
+			RibCount:    n,
+			Established: strings.Contains(strings.ToUpper(p.State), "ESTABLISHED"),
+		})
+	}
+	return out
 }

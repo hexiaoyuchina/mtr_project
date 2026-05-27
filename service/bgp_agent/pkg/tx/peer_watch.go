@@ -3,6 +3,7 @@ package tx
 import (
 	"context"
 	"log"
+	"strings"
 
 	"bgp_agent/pkg/gobgp_path"
 	"bgp_agent/pkg/processor"
@@ -63,12 +64,13 @@ func (a *TxAgent) handleLearnedPath(ctx context.Context, window, vrf, neighbor s
 	if path == nil {
 		return
 	}
+	sourceIP := a.neighborLocalAddress(neighbor)
 	if path.IsWithdraw {
 		pfx, ok := gobgp_path.ParseWithdrawPrefix(path)
 		if !ok || pfx == "" {
 			return
 		}
-		if err := a.handler.HandlePeerWithdraw(ctx, window, vrf, neighbor, pfx); err != nil {
+		if err := a.handler.HandlePeerWithdraw(ctx, window, vrf, neighbor, sourceIP, pfx); err != nil {
 			log.Printf("TX peer withdraw %s %s: %v", neighbor, pfx, err)
 		}
 		return
@@ -77,7 +79,18 @@ func (a *TxAgent) handleLearnedPath(ctx context.Context, window, vrf, neighbor s
 	if !ok {
 		return
 	}
-	if err := a.handler.HandlePeerUpdate(ctx, window, vrf, neighbor, prefix, nexthop, aspath, remoteAS); err != nil {
+	if err := a.handler.HandlePeerUpdate(ctx, window, vrf, neighbor, sourceIP, prefix, nexthop, aspath, remoteAS); err != nil {
 		log.Printf("TX peer update %s %s: %v", neighbor, prefix, err)
 	}
+}
+
+func (a *TxAgent) neighborLocalAddress(neighbor string) string {
+	a.neighborsMu.RLock()
+	defer a.neighborsMu.RUnlock()
+	if peer, ok := a.neighbors[neighbor]; ok && peer != nil && peer.Transport != nil {
+		if la := strings.TrimSpace(peer.Transport.LocalAddress); la != "" && la != "0.0.0.0" {
+			return la
+		}
+	}
+	return ""
 }

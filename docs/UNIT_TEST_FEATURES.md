@@ -72,8 +72,9 @@
 | BGP-04 | 新增邻居 | `POST /api/bgp/neighbors` | mock Agent |
 | BGP-05 | 编辑 / 删除 | `PATCH/DELETE /api/bgp/neighbors/{vrf}/{ip}` | meta 同步 |
 | BGP-06 | 启停会话 | `POST .../toggle` | enabled 切换 |
-| BGP-07 | 路由入库 | `POST .../store-routes` | 标志位持久化 |
-| BGP-08 | 路由通告 | `POST .../advertise`，`GET .../advertise/status` | 异步任务状态 |
+| BGP-07 | FIB 选路 | `GET /api/fib/routes/count`，`POST /api/fib/recompute` | upstream/downstream_fib 条数与重算 |
+| BGP-08 | FIB export | `POST /api/export/reconcile` | 启动/部署后 diff 通告，无全量扫库 |
+| BGP-09 | 百万压测 | `tools/bgp_fib_perf_test.py --count-only` | FIB 分页 P99 基线 |
 | BGP-09 | 从 FRR 同步 | `POST /api/bgp/sync-from-frr` | mock Agent |
 | BGP-10 | 恢复 Agent | `POST /api/bgp/restore-agent` | mock reconcile |
 | BGP-11 | 表单提示 | `GET /api/bgp/neighbor-form-hints` | RR / 卫星源 IP 列表 |

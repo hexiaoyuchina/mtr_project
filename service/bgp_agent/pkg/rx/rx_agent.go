@@ -28,15 +28,16 @@ type Config struct {
 type RouteHandler interface {
 	HandleUpdate(ctx context.Context, prefix, nexthop, aspath string, asn uint32) error
 	HandleWithdraw(ctx context.Context, prefix string) error
-	HandlePeerUpdate(ctx context.Context, window, vrf, neighbor, prefix, nexthop, aspath string, asn uint32) error
-	HandlePeerWithdraw(ctx context.Context, window, vrf, neighbor, prefix string) error
+	HandlePeerUpdate(ctx context.Context, window, vrf, neighbor, sourceIP, prefix, nexthop, aspath string, asn uint32) error
+	HandlePeerWithdraw(ctx context.Context, window, vrf, neighbor, sourceIP, prefix string) error
 }
 
 // RxAgent GoBGP RX Agent：从多个 RR 接收路由（多活全量）
 type RxAgent struct {
-	config  *Config
-	server  *server.BgpServer
-	handler RouteHandler
+	config   *Config
+	server   *server.BgpServer
+	grpcAddr string
+	handler  RouteHandler
 	rrPeers map[string]*rrPeerEntry
 	rrMu    sync.RWMutex
 }
@@ -52,7 +53,8 @@ func NewRxAgent(config *Config, handler RouteHandler) (*RxAgent, error) {
 
 // Start 启动RX Agent
 func (a *RxAgent) Start(ctx context.Context) error {
-	s := server.NewBgpServer()
+	a.grpcAddr = "127.0.0.1:50179"
+	s := server.NewBgpServer(server.GrpcListenAddress(a.grpcAddr))
 	go s.Serve()
 	a.server = s
 
@@ -352,10 +354,10 @@ func (a *RxAgent) handlePath(ctx context.Context, path *api.Path) {
 		if !ok || pfx == "" {
 			return
 		}
-		if err := a.handler.HandlePeerWithdraw(ctx, window, vrf, neighbor, pfx); err != nil {
+		sourceIP := a.rrLocalAddress()
+		if err := a.handler.HandlePeerWithdraw(ctx, window, vrf, neighbor, sourceIP, pfx); err != nil {
 			log.Printf("peer withdraw失败: %v", err)
 		}
-		_ = a.handler.HandleWithdraw(ctx, pfx)
 		return
 	}
 
@@ -363,10 +365,10 @@ func (a *RxAgent) handlePath(ctx context.Context, path *api.Path) {
 	if !ok || prefix == "" {
 		return
 	}
-	if err := a.handler.HandlePeerUpdate(ctx, window, vrf, neighbor, prefix, nexthop, aspath, asn); err != nil {
+	sourceIP := a.rrLocalAddress()
+	if err := a.handler.HandlePeerUpdate(ctx, window, vrf, neighbor, sourceIP, prefix, nexthop, aspath, asn); err != nil {
 		log.Printf("peer update失败: %v", err)
 	}
-	_ = a.handler.HandleUpdate(ctx, prefix, nexthop, aspath, asn)
 }
 
 // ConfigRouterID 返回配置的 Router ID

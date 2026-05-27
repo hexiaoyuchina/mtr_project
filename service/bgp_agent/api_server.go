@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
+	"bgp_agent/pkg/export"
+	"bgp_agent/pkg/fib"
+	"bgp_agent/pkg/pipeline"
 	"bgp_agent/pkg/processor"
 	"bgp_agent/pkg/rx"
 	"bgp_agent/pkg/storage"
@@ -22,13 +25,13 @@ type APIServer struct {
 	storage   *storage.Storage
 	mux       *http.ServeMux
 
-	ribJobsMu sync.Mutex
-	ribJobs   map[string]*ribAdvertiseJob
+	rrWasUp map[string]bool
+	dsWasUp map[string]bool
 
-	ingestMu       sync.Mutex
-	ingestInflight map[string]bool
-	rrWasUp        map[string]bool
-	dsWasUp        map[string]bool
+	fibEngine   *fib.Engine
+	fibHook     *fib.Hook
+	exportCoord *export.Coordinator
+	pipeline    *pipeline.Orchestrator
 }
 
 // NewAPIServer 创建API服务器
@@ -46,8 +49,6 @@ func NewAPIServer(
 		txPool:         txPool,
 		storage:        store,
 		mux:            http.NewServeMux(),
-		ribJobs:        make(map[string]*ribAdvertiseJob),
-		ingestInflight: make(map[string]bool),
 		rrWasUp:        make(map[string]bool),
 		dsWasUp:        make(map[string]bool),
 	}
@@ -80,9 +81,41 @@ func (s *APIServer) registerRoutes() {
 	s.mux.HandleFunc("/api/rib/policy", s.handleRibPolicy)
 	s.mux.HandleFunc("/api/rib/ingest-peer", s.handleRibIngestPeer)
 	s.mux.HandleFunc("/api/rib/ingest-downstream", s.handleRibIngestDownstream)
-	s.mux.HandleFunc("/api/rib/advertise", s.handleRibAdvertise)
-	s.mux.HandleFunc("/api/rib/withdraw", s.handleRibWithdraw)
-	s.mux.HandleFunc("/api/rib/advertise/status", s.handleRibAdvertiseStatus)
+	s.mux.HandleFunc("/api/rib/purge-peer", s.handleRibPurgePeer)
+	s.mux.HandleFunc("/api/fib/routes", s.handleFibRoutes)
+	s.mux.HandleFunc("/api/fib/routes/count", s.handleFibRoutesCount)
+	s.mux.HandleFunc("/api/fib/recompute", s.handleFibRecompute)
+	s.mux.HandleFunc("/api/export/reconcile", s.handleExportReconcile)
+	s.mux.HandleFunc("/api/kernel/reconcile", s.handleKernelReconcile)
+	s.mux.HandleFunc("/api/pipeline/repair", s.handlePipelineRepair)
+	s.mux.HandleFunc("/api/pipeline/status", s.handlePipelineStatus)
+	s.mux.HandleFunc("/api/pipeline/consistency", s.handlePipelineConsistency)
+}
+
+// SetFibExport 注入 FIB 引擎、export 协调器与 pipeline。
+func (s *APIServer) SetFibExport(fibEngine *fib.Engine, exportCoord *export.Coordinator, fibHook *fib.Hook) {
+	s.fibEngine = fibEngine
+	s.exportCoord = exportCoord
+	s.fibHook = fibHook
+	if fibEngine != nil {
+		fibEngine.SetSourceIPResolver(func(window, vrf, neighbor string) string {
+			if window != fib.WindowDownstream {
+				return ""
+			}
+			return s.resolveDownstreamSourceIP(context.Background(), vrf, neighbor)
+		})
+	}
+	kernel := export.NewKernelInstaller()
+	s.pipeline = pipeline.New(s.storage, fibEngine, exportCoord, kernel)
+	s.pipeline.SetIngestPeer(s.ingestPeerRoutesCore)
+	s.pipeline.SetListPeers(s.listPeerSnapshots)
+	if fibHook != nil {
+		fibHook.SetOnPurgeWindow(func(window string) {
+			if s.pipeline != nil {
+				s.pipeline.EnqueueFibRecompute(window)
+			}
+		})
+	}
 }
 
 func (s *APIServer) Start() error {

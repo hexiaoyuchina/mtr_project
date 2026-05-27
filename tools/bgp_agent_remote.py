@@ -9,7 +9,7 @@ from typing import Dict, Mapping
 
 
 def bgp_agent_config_from_env() -> Dict[str, str]:
-    return {
+    cfg = {
         "local_as": os.environ.get("LOCAL_AS", "63199").strip(),
         "router_id": os.environ.get("ROUTER_ID", "139.159.43.207").strip(),
         "redis_addr": os.environ.get("REDIS_ADDR", "localhost:6379").strip(),
@@ -17,6 +17,30 @@ def bgp_agent_config_from_env() -> Dict[str, str]:
         "api_addr": os.environ.get("API_ADDR", ":9179").strip(),
         "remote_dir": os.environ.get("MTR_OP_REMOTE_DIR", "/root/mtr_op").strip(),
     }
+    for key in (
+        "MTR_FIB_KERNEL_TABLE_UPSTREAM",
+        "MTR_FIB_KERNEL_TABLE_DOWNSTREAM",
+        "MTR_FIB_KERNEL_BATCH_SIZE",
+        "MTR_FIB_KERNEL_BULK_MIN",
+    ):
+        val = os.environ.get(key, "").strip()
+        if val:
+            cfg[key] = val
+    return cfg
+
+
+def _bgp_agent_unit_environment(cfg: Mapping[str, str]) -> str:
+    lines = ["Environment=PATH=/usr/local/go/bin:/usr/bin:/bin"]
+    for key in (
+        "MTR_FIB_KERNEL_TABLE_UPSTREAM",
+        "MTR_FIB_KERNEL_TABLE_DOWNSTREAM",
+        "MTR_FIB_KERNEL_BATCH_SIZE",
+        "MTR_FIB_KERNEL_BULK_MIN",
+    ):
+        val = (cfg.get(key) or "").strip()
+        if val:
+            lines.append(f"Environment={key}={val}")
+    return "\n".join(lines)
 
 
 def deploy_exec_timeout(*, remote_rebuild: bool) -> int:
@@ -30,6 +54,7 @@ def shell_sync_bgp_agent(cfg: Mapping[str, str], *, rebuild: bool = False) -> st
     """生成在目标机执行的 bash：更新 unit、daemon-reload、restart、health + status。"""
     op_dir = cfg["remote_dir"]
     rocks = cfg["rocksdb_path"]
+    unit_env = _bgp_agent_unit_environment(cfg)
     rebuild_block = ""
     if rebuild:
         rebuild_block = f"""
@@ -59,7 +84,7 @@ Wants=redis-server.service
 [Service]
 Type=simple
 WorkingDirectory={op_dir}/bgp_agent
-Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+{unit_env}
 ExecStart={op_dir}/bgp_agent/bgp_agent \\
   -local-as {cfg["local_as"]} -router-id {cfg["router_id"]} \\
   -redis {cfg["redis_addr"]} -rocksdb {cfg["rocksdb_path"]} \\

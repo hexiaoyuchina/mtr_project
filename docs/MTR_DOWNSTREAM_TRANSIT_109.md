@@ -18,7 +18,8 @@
 | RR | `139.159.43.249` | 去程 default 下一跳 |
 | 下游 peer | `139.159.43.208/24` | BGP 邻居；与 109 同二层 |
 | 客户端 mtr 源 | `139.159.105.94` | 通常与 **208 同机双 IP** |
-| 回程策略匹配前缀 | `139.159.105.92/30` | `MTR_DOWNSTREAM_RETURN_PREFIX` |
+| 回程策略匹配前缀 | `139.159.105.92/30` | `MTR_DOWNSTREAM_RETURN_PREFIX`（2111 路由用；rule 为 iif 时不写 to） |
+| 回程 rule 样式 | `iif`（默认） | `MTR_DOWNSTREAM_RETURN_RULE_STYLE`：`iif` / `to` / `iif_to` |
 
 ---
 
@@ -103,7 +104,7 @@ sequenceDiagram
 
   N->>R: ④ 回程
   R->>U: ⑤ iif=上联 dst=105.94
-  Note over U: pref 29 → table 2111
+  Note over U: pref 29 iif 上联 → table 2111
   U->>D: ⑥ dev eno1np0（无 via 208）
   Note over D: L2: 105.94 → 208 的 MAC
   D->>C: ⑦ TE/Reply
@@ -113,7 +114,8 @@ sequenceDiagram
 
 | 项 | 值 |
 |----|-----|
-| **ip rule** pref **29** | `to 139.159.105.92/30 lookup 2111`（`MTR_DOWNSTREAM_TO_CLIENT_RULE_PREF`） |
+| **ip rule** pref **29** | `iif enp59s0f0np0 lookup 2111`（`MTR_DOWNSTREAM_RETURN_RULE_STYLE=iif`，与 pref30 对称） |
+| 可选旧式 | `MTR_DOWNSTREAM_RETURN_RULE_STYLE=to` → `to 105.92/30 lookup 2111` |
 | **table 2111** | `105.92/30 dev eno1np0`（**勿**写 `via 208`） |
 | | `43.208/32 dev eno1np0` |
 | **主表** | 已删除与 105.x 冲突的直连项（由脚本 `scrub_main_return_conflict`） |
@@ -166,7 +168,7 @@ ip neigh replace 139.159.105.94 lladdr <208的MAC> dev eno1np0 nud permanent
 
 ## 109 静态配置一览（脚本下发）
 
-由 `python 109/apply_downstream_transit.py` 写入；持久化：`/usr/local/sbin/mtr-op-downstream-transit.sh`（**重启后需自行保证执行**，仓库未含 systemd 单元）。
+由 `python 109/apply_downstream_transit.py` 写入；持久化：`/usr/local/sbin/mtr-op-downstream-transit.sh`（**重启后需自行保证执行**，仓库未含 systemd 单元）。脚本末尾会调用 **`/usr/local/sbin/mtr-op-inbound-trace-stealth.sh`**（若存在且可执行），见 `109/apply_inbound_trace_stealth.py`。
 
 | 类别 | 内容 |
 |------|------|
@@ -190,7 +192,14 @@ ip neigh replace 139.159.105.94 lladdr <208的MAC> dev eno1np0 nud permanent
 python 109/apply_downstream_transit.py
 python 109/apply_downstream_transit.py --check
 python 109/apply_downstream_transit.py --teardown
+
+# 外网 mtr 内网 IP 隐身（PREROUTING TTL+1 + 本机 ICMP DROP）
+python 109/apply_inbound_trace_stealth.py
+python 109/apply_inbound_trace_stealth.py --check
+python 109/apply_inbound_trace_stealth.py --teardown
 ```
+
+持久化：`/usr/local/sbin/mtr-op-inbound-trace-stealth.sh`。若开机已跑 `mtr-op-downstream-transit.sh`，会顺带执行 stealth；否则需单独 cron。
 
 ### 常见故障
 

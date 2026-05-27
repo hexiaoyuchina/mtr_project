@@ -104,12 +104,12 @@ func (s *APIServer) syncPeerFreezeState(ctx context.Context) {
 		s.processor.SetUpstreamPeerConnected(p.Address, up)
 		was := s.rrWasUp[p.Address]
 		if up && !was {
-			s.notePeerEstablished(processor.WindowUpstream, processor.VRFGobgpRR, p.Address)
+			s.notePeerEstablished(processor.WindowUpstream, processor.VRFGobgpRR, p.Address, p.LocalAddress)
 		}
 		s.rrWasUp[p.Address] = up
 		if up {
 			anyRRUp = true
-			s.maybeReconcileIngestGap(ctx, processor.WindowUpstream, processor.VRFGobgpRR, p.Address, p.PfxRcd)
+			s.maybeReconcileIngestGap(ctx, processor.WindowUpstream, processor.VRFGobgpRR, p.Address, p.LocalAddress, p.PfxRcd)
 		}
 	}
 	s.processor.SetRRConnected(anyRRUp)
@@ -130,14 +130,33 @@ func (s *APIServer) syncPeerFreezeState(ctx context.Context) {
 		s.processor.SetDownstreamPeerConnected(p.Vrf, p.Address, up)
 		dsKey := p.Vrf + "|" + p.Address
 		was := s.dsWasUp[dsKey]
+		if up {
+			s.txPool.SetVrfFrozen(p.Vrf, false)
+		}
 		if up && !was {
-			s.notePeerEstablished(processor.WindowDownstream, p.Vrf, p.Address)
+			s.notePeerEstablished(processor.WindowDownstream, p.Vrf, p.Address, p.LocalAddress)
+			if s.fibEngine != nil {
+				sip := strings.TrimSpace(p.LocalAddress)
+				go func(vrf, nip, la string) {
+					_ = s.fibEngine.RecomputeForPeer(
+						context.Background(),
+						processor.WindowDownstream,
+						vrf,
+						nip,
+						la,
+					)
+				}(p.Vrf, p.Address, sip)
+			}
+			if s.exportCoord != nil {
+				go s.exportCoord.ReconcileForce(context.Background())
+			}
 		}
 		s.dsWasUp[dsKey] = up
 		if up {
-			s.maybeReconcileIngestGap(ctx, processor.WindowDownstream, p.Vrf, p.Address, p.PfxRcd)
+			s.maybeReconcileIngestGap(ctx, processor.WindowDownstream, p.Vrf, p.Address, p.LocalAddress, p.PfxRcd)
+		} else {
+			s.txPool.SetVrfFrozen(p.Vrf, true)
 		}
-		s.txPool.SetVrfFrozen(p.Vrf, !up)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"bgp_agent/pkg/processor"
 )
 
 type neighborAddReq struct {
@@ -107,7 +108,9 @@ func (s *APIServer) handleAddNeighbor(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		_ = s.processor.EnsurePeerPolicyEnabled(ctx, processor.WindowUpstream, processor.VRFGobgpRR, req.Address, req.LocalAddress)
 		s.syncPeerFreezeState(ctx)
+		s.maybeBackgroundIngestPeer(processor.WindowUpstream, processor.VRFGobgpRR, req.Address, req.LocalAddress)
 		s.writeJSON(w, map[string]interface{}{"ok": true, "session": "rx", "address": req.Address, "local_address": s.rxAgent.LocalBGPAddress()})
 		return
 	}
@@ -123,6 +126,8 @@ func (s *APIServer) handleAddNeighbor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.processor.EnsurePeerPolicyEnabled(ctx, processor.WindowDownstream, vrf, req.Address, req.LocalAddress)
+	s.maybeBackgroundIngestPeer(processor.WindowDownstream, vrf, req.Address, req.LocalAddress)
 	s.writeJSON(w, map[string]interface{}{
 		"ok":      true,
 		"session": "tx",
@@ -153,6 +158,8 @@ func (s *APIServer) handleRemoveNeighbor(w http.ResponseWriter, r *http.Request)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		sourceIP := s.rxAgent.LocalBGPAddress()
+		_, _ = s.processor.PurgePeerRIB(ctx, processor.WindowUpstream, processor.VRFGobgpRR, addr, sourceIP)
 		s.syncPeerFreezeState(ctx)
 		s.writeJSON(w, map[string]interface{}{"ok": true, "session": "rx", "address": addr})
 		return
@@ -160,6 +167,8 @@ func (s *APIServer) handleRemoveNeighbor(w http.ResponseWriter, r *http.Request)
 	if vrf == "" {
 		vrf = "default"
 	}
+	sourceIP := s.resolveDownstreamSourceIP(ctx, vrf, req.Address)
+	_, _ = s.processor.PurgePeerRIB(ctx, processor.WindowDownstream, vrf, req.Address, sourceIP)
 	if err := s.txPool.RemoveNeighbor(ctx, vrf, req.Address); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -185,6 +194,25 @@ func (s *APIServer) handleNeighborToggle(w http.ResponseWriter, r *http.Request)
 	if err := s.txPool.SetNeighborEnabled(ctx, vrf, req.Address, req.Enabled); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	win := processor.WindowDownstream
+	sourceIP := ""
+	if peers, err := s.txPool.ListAllPeers(ctx); err == nil {
+		for _, p := range peers {
+			if p.Vrf == vrf && p.Address == req.Address {
+				sourceIP = p.LocalAddress
+				break
+			}
+		}
+	}
+	_ = s.processor.SetPeerEnabled(ctx, win, vrf, req.Address, sourceIP, req.Enabled)
+	if !req.Enabled && s.exportCoord != nil {
+		s.exportCoord.WithdrawTXPeer(ctx, vrf, req.Address, sourceIP)
+		if s.pipeline != nil {
+			s.pipeline.EnqueueFibRecompute(processor.WindowDownstream)
+		}
+	} else if req.Enabled && s.pipeline != nil {
+		s.pipeline.EnqueueIngest(processor.WindowDownstream, vrf, req.Address, sourceIP)
 	}
 	s.writeJSON(w, map[string]interface{}{"ok": true, "enabled": req.Enabled})
 }
@@ -236,7 +264,18 @@ func (s *APIServer) handleRRToggle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.processor.SetPeerEnabled(ctx, processor.WindowUpstream, processor.VRFGobgpRR, addr, s.rxAgent.LocalBGPAddress(), req.Enabled)
 	s.syncPeerFreezeState(ctx)
+	if !req.Enabled && s.exportCoord != nil {
+		s.exportCoord.WithdrawRRPeer(ctx, addr)
+	}
+	if s.pipeline != nil {
+		if req.Enabled {
+			s.pipeline.EnqueueIngest(processor.WindowUpstream, processor.VRFGobgpRR, addr, s.rxAgent.LocalBGPAddress())
+		} else {
+			s.pipeline.EnqueueFibRecompute(processor.WindowUpstream)
+		}
+	}
 	s.writeJSON(w, map[string]interface{}{"ok": true, "enabled": req.Enabled, "address": addr})
 }
 
@@ -250,10 +289,12 @@ func (s *APIServer) handleRRRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	ctx := r.Context()
-	if err := s.rxAgent.RemoveRR(ctx, strings.TrimSpace(req.Address)); err != nil {
+	addr := strings.TrimSpace(req.Address)
+	if err := s.rxAgent.RemoveRR(ctx, addr); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_, _ = s.processor.PurgePeerRIB(ctx, processor.WindowUpstream, processor.VRFGobgpRR, addr, s.rxAgent.LocalBGPAddress())
 	s.syncPeerFreezeState(ctx)
 	s.writeJSON(w, map[string]interface{}{"ok": true, "address": req.Address})
 }

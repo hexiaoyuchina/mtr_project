@@ -649,7 +649,7 @@
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0; margin-bottom: 12px">
-                  下列表为<strong>本机全部 VRF</strong> 的邻居（<span class="mono">bgp-agent</span>）。<strong>收到</strong> 为会话计数（<span class="mono">pfx_rcd</span>）；持久库条数见侧栏「BGP 路由」上游/下游窗。三个开关：<strong>邻居启停</strong>（停 BGP 会话）、<strong>路由入库</strong>（把对端 IP 通告给本机的路由写入 Redis/RocksDB，RR/下游同一逻辑）、<strong>路由通告</strong>（以本行 TCP 源为出口，从持久库读出并通告给对端 IP）。
+                  下列表为<strong>本机全部 VRF</strong> 的邻居（<span class="mono">bgp-agent</span>）。<strong>收到</strong> 为会话计数（<span class="mono">pfx_rcd</span>）；持久库与 FIB 通告由 Agent 自动维护（enabled 邻居自动入库 + FIB diff 通告）。
                   <strong>RR</strong>：角色 RR，VRF 选 <span class="mono">gobgp-rr</span>（可添加多个上游 RR，如 153.204/205/206，本端 TCP 源统一为 153.200）。<strong>下游</strong>：先 ARP + 卫星 VRF，TCP 源为冒充 IP。网口：<span class="mono">docs/BGP_OP_NETWORK.md</span>。
                 </p>
                 <div class="row" style="flex-wrap: wrap; gap: 12px; align-items: flex-end">
@@ -703,8 +703,6 @@
                       <th>状态</th>
                       <th title="BGP 会话从对端收到的前缀数（pfx_rcd）">收到</th>
                       <th>邻居启停</th>
-                      <th>路由入库</th>
-                      <th>路由通告</th>
                       <th class="bgp-col-sticky">操作</th>
                     </tr>
                   </thead>
@@ -724,55 +722,18 @@
                 </div>
               </div>
               <div class="bd">
-                <p class="small" style="margin-top: 0; margin-bottom: 10px">
+                <p class="small" style="margin-top: 0; margin-bottom: 10px" id="brPageDesc">
                   本页<strong>仅查看</strong>持久库路由（<span class="mono">Redis + RocksDB</span>）。
-                  <strong>VRF</strong> 与 <strong>来源邻居 IP</strong> 为<strong>或</strong>关系；可填<strong>前缀</strong>做<strong>精确</strong>查询（如 <span class="mono">8.8.8.8/32</span> 或 <span class="mono">8.8.8.8</span>，在已筛选的 peer 范围内查找）。无前缀时按<strong>查询</strong>分页浏览。
+                  <strong>RIB</strong> 按邻居入库；<strong>FIB</strong> 为多 RR 合并后的转发表（通告下游 / 装内核表）。
                 </p>
-                <div class="row" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px" id="brWindowTabs">
-                  <button type="button" class="btn primary" data-br-win="">全部</button>
-                  <button type="button" class="btn" data-br-win="upstream">上游窗 (RR)</button>
-                  <button type="button" class="btn" data-br-win="downstream">下游窗 (运营商)</button>
-                </div>
-                <div class="kpis" style="margin-bottom: 12px" id="brWindowKpis">
-                  <div class="kpi">
-                    <div class="k">上游窗</div>
-                    <div class="v mono" id="brKpiUpstream">—</div>
-                  </div>
-                  <div class="kpi">
-                    <div class="k">下游窗</div>
-                    <div class="v mono" id="brKpiDownstream">—</div>
-                  </div>
-                  <div class="kpi">
-                    <div class="k">合计</div>
-                    <div class="v mono" id="brKpiTotal">—</div>
-                  </div>
-                </div>
-                <details class="small" style="margin-bottom: 10px" id="brPeerSnapWrap">
-                  <summary>Peer 快照 / freeze</summary>
-                  <div class="br-table-scroll" style="max-height: 140px; margin-top: 8px">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>窗</th>
-                          <th>VRF</th>
-                          <th>邻居</th>
-                          <th>Freeze</th>
-                          <th>条数</th>
-                          <th>同步</th>
-                        </tr>
-                      </thead>
-                      <tbody id="brPeerSnapBody"></tbody>
-                    </table>
-                  </div>
-                </details>
-                <div class="row" style="flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 10px">
-                  <div class="field" style="min-width: 140px">
+                <div class="row" style="flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 12px" id="brQueryBar">
+                  <div class="field" style="min-width: 140px" id="brFieldVrf">
                     <label class="small">VRF</label>
                     <select id="brFilterVrf" class="mono">
                       <option value="">全部</option>
                     </select>
                   </div>
-                  <div class="field" style="min-width: 220px">
+                  <div class="field" style="min-width: 220px" id="brFieldNeighbor">
                     <label class="small">来源邻居 IP</label>
                     <select id="brFilterNeighbor" class="mono">
                       <option value="">全部</option>
@@ -804,10 +765,33 @@
                     <button type="button" class="btn primary" id="btnBrQuery">查询</button>
                   </div>
                 </div>
+                <div class="row" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px" id="brSourceTabs">
+                  <button type="button" class="btn primary" data-br-src="rib">RIB · 按邻居</button>
+                  <button type="button" class="btn" data-br-src="fib">FIB · 合并结果</button>
+                </div>
+                <div class="row" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px" id="brWindowTabs">
+                  <button type="button" class="btn primary" data-br-win="" id="brWinAll">全部</button>
+                  <button type="button" class="btn" data-br-win="upstream">上游窗 (RR)</button>
+                  <button type="button" class="btn" data-br-win="downstream">下游窗 (运营商)</button>
+                </div>
+                <div class="kpis" style="margin-bottom: 12px" id="brWindowKpis">
+                  <div class="kpi">
+                    <div class="k" id="brKpiUpLabel">上游窗</div>
+                    <div class="v mono" id="brKpiUpstream">—</div>
+                  </div>
+                  <div class="kpi">
+                    <div class="k" id="brKpiDnLabel">下游窗</div>
+                    <div class="v mono" id="brKpiDownstream">—</div>
+                  </div>
+                  <div class="kpi">
+                    <div class="k" id="brKpiTotLabel">合计</div>
+                    <div class="v mono" id="brKpiTotal">—</div>
+                  </div>
+                </div>
                 <div class="small mono" id="brSyncMeta" style="margin-bottom: 10px; color: var(--muted)">—</div>
                 <div class="br-table-scroll">
                   <table>
-                    <thead>
+                    <thead id="brRoutesThead">
                       <tr>
                         <th>窗口</th>
                         <th>VRF</th>
@@ -941,13 +925,14 @@
                 <div class="h">静态路由条目</div>
                 <div class="row" style="flex-wrap: wrap; gap: 10px; align-items: center">
                   <button type="button" class="btn" id="btnSrRefresh">刷新</button>
+                  <button type="button" class="btn" id="btnSrReconcile">内核对账</button>
                   <button type="button" class="btn" id="btnSrProbe">批量探测</button>
                   <button type="button" class="btn primary" id="btnSrAdd">新增路由</button>
                 </div>
               </div>
               <div class="bd">
                 <p class="small" style="margin-top: 0">
-                  维护主机 <span class="mono">ip route</span>（main / 策略表 / 卫星 VRF）。<strong>保存</strong>即写库并写内核（已下发）；<strong>停用</strong>删内核；<strong>启用</strong>重新写内核。
+                  维护主机 <span class="mono">ip route</span>（main / 策略表 / 卫星 VRF）。<strong>保存</strong>即写库并写内核；列表默认<strong>只读数据库</strong>（快），需核对真实 FIB 时点「内核对账」。
                 </p>
                 <div class="kpis" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 12px">
                   <div class="kpi">
@@ -1367,6 +1352,82 @@
       let brTotalPages = 1;
       let brActiveWindow = "";
       let brPeerPairs = [];
+      let brActiveDataSource = "rib";
+      let brFibSummary = { upstream: 0, downstream: 0, total: 0 };
+
+      function brColSpan() {
+        return brActiveDataSource === "fib" ? 9 : 11;
+      }
+
+      function brEffectiveWindow() {
+        if (brActiveDataSource === "fib") {
+          return brActiveWindow || "upstream";
+        }
+        return brActiveWindow;
+      }
+
+      function brRenderThead() {
+        const thead = $("#brRoutesThead");
+        if (!thead) return;
+        if (brActiveDataSource === "fib") {
+          thead.innerHTML = `
+            <tr>
+              <th>窗口</th>
+              <th>前缀</th>
+              <th>下一跳</th>
+              <th>胜出来源邻居</th>
+              <th>TCP 源</th>
+              <th>VRF</th>
+              <th>AS_PATH</th>
+              <th>更新时间</th>
+              <th>数据来源</th>
+            </tr>`;
+        } else {
+          thead.innerHTML = `
+            <tr>
+              <th>窗口</th>
+              <th>VRF</th>
+              <th>前缀</th>
+              <th>下一跳</th>
+              <th>来源角色</th>
+              <th>来源邻居 IP</th>
+              <th>远端 AS</th>
+              <th>AS_PATH</th>
+              <th>数据更新时间</th>
+              <th>已持久化</th>
+              <th>数据来源</th>
+            </tr>`;
+        }
+      }
+
+      function brApplyDataSourceUI() {
+        const isFib = brActiveDataSource === "fib";
+        const vrfField = $("#brFieldVrf");
+        const neighborField = $("#brFieldNeighbor");
+        const winAll = $("#brWinAll");
+        if (vrfField) vrfField.style.display = isFib ? "none" : "";
+        if (neighborField) neighborField.style.display = isFib ? "none" : "";
+        if (winAll) winAll.style.display = isFib ? "none" : "";
+        if (isFib && !brActiveWindow) {
+          brActiveWindow = "upstream";
+          document.querySelectorAll("#brWindowTabs [data-br-win]").forEach((b) => {
+            b.classList.toggle("primary", (b.getAttribute("data-br-win") || "") === "upstream");
+          });
+        }
+        brRenderThead();
+      }
+
+      function brSetDataSource(src) {
+        const next = src === "fib" ? "fib" : "rib";
+        if (next === brActiveDataSource) return;
+        brActiveDataSource = next;
+        document.querySelectorAll("#brSourceTabs [data-br-src]").forEach((b) => {
+          b.classList.toggle("primary", (b.getAttribute("data-br-src") || "") === brActiveDataSource);
+        });
+        brApplyDataSourceUI();
+        brCurrentPage = 1;
+        loadBrRoutes();
+      }
 
       function renderBrNeighborOptions() {
         const ns = $("#brFilterNeighbor");
@@ -1406,7 +1467,7 @@
           if (document.hidden) return;
           if (brRoutesBusy) return;
           brRoutesBusy = true;
-          loadLearnedRoutes()
+          loadBrRoutes()
             .catch(() => {})
             .finally(() => {
               brRoutesBusy = false;
@@ -1518,7 +1579,7 @@
         const meta = {
           dash: ["总览", "功能开关、服务状态与规则统计"],
           bgp: ["BGP 管理", "GoBGP Agent：邻居新增、启停与会话状态"],
-          "bgp-routes": ["BGP 路由", "只读查询；VRF/邻居可选全部"],
+          "bgp-routes": ["BGP 路由", "RIB 按邻居 / FIB 合并结果；支持分页与前缀精确查询"],
           rules: ["逐跳替换规则", "match_cidr 对应 MTR 显示的真实 hop IP；改写 TE 外层源为 forged_src"],
           gateway: ["ARP 引流", "配置接口与冒充网关 IPv4（二层 ARP，与 TE 改写独立）"],
           "static-routes": ["静态路由", "主机 ip route：main / 表 / VRF，含跨 VRF 下一跳"],
@@ -1536,12 +1597,13 @@
           stopBgpPoll();
           stopBrRoutesPoll();
           brCurrentPage = 1;
+          brApplyDataSourceUI();
           (async () => {
             await loadLearnedRouteFilters();
             const tbody = $("#brRoutesBody");
             if (tbody) {
               tbody.innerHTML =
-                '<tr><td colspan="11" class="small">VRF 与邻居 IP 为「或」筛选，可任选其一或都选「全部」；点击「查询」查看路由明细。</td></tr>';
+                `<tr><td colspan="${brColSpan()}" class="small">选择 RIB 或 FIB 数据源，再点击「查询」查看路由明细。</td></tr>`;
             }
             const meta = $("#brSyncMeta");
             if (meta) meta.textContent = "—";
@@ -1597,7 +1659,7 @@
       async function brRefreshView() {
         await loadLearnedRouteFilters();
         brCurrentPage = 1;
-        await loadLearnedRoutes();
+        await loadBrRoutes();
       }
 
       $("#btnBrRefresh")?.addEventListener("click", async () => {
@@ -1606,13 +1668,13 @@
       });
       $("#btnBrQuery")?.addEventListener("click", async () => {
         brCurrentPage = 1;
-        await loadLearnedRoutes();
+        await loadBrRoutes();
       });
       $("#brFilterPrefix")?.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") {
           ev.preventDefault();
           brCurrentPage = 1;
-          loadLearnedRoutes();
+          loadBrRoutes();
         }
       });
       $("#brPageSize")?.addEventListener("change", () => {
@@ -1625,7 +1687,12 @@
             b.classList.toggle("primary", (b.getAttribute("data-br-win") || "") === brActiveWindow);
           });
           brCurrentPage = 1;
-          loadLearnedRoutes();
+          loadBrRoutes();
+        });
+      });
+      document.querySelectorAll("#brSourceTabs [data-br-src]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          brSetDataSource(btn.getAttribute("data-br-src") || "rib");
         });
       });
       $("#brPageFirst")?.addEventListener("click", brGoFirst);
@@ -1647,6 +1714,28 @@
       }
 
       function renderBrSummary(summary) {
+        const upEl = $("#brKpiUpLabel");
+        const dnEl = $("#brKpiDnLabel");
+        const totEl = $("#brKpiTotLabel");
+        if (brActiveDataSource === "fib") {
+          const fs = brFibSummary && typeof brFibSummary === "object" ? brFibSummary : {};
+          const up = Number(fs.upstream ?? 0);
+          const dn = Number(fs.downstream ?? 0);
+          const tot = Number(fs.total ?? up + dn);
+          if (upEl) upEl.textContent = "FIB 上游";
+          if (dnEl) dnEl.textContent = "FIB 下游";
+          if (totEl) totEl.textContent = "FIB 合计";
+          const u = $("#brKpiUpstream");
+          const d = $("#brKpiDownstream");
+          const t = $("#brKpiTotal");
+          if (u) u.textContent = String(up);
+          if (d) d.textContent = String(dn);
+          if (t) t.textContent = String(tot);
+          return;
+        }
+        if (upEl) upEl.textContent = "RIB 上游";
+        if (dnEl) dnEl.textContent = "RIB 下游";
+        if (totEl) totEl.textContent = "RIB 合计";
         const s = summary && typeof summary === "object" ? summary : {};
         const up = Number(s.upstream ?? 0);
         const dn = Number(s.downstream ?? 0);
@@ -1711,6 +1800,21 @@
         return ($("#brFilterPrefix")?.value || "").trim();
       }
 
+      function fibRoutesQueryPath() {
+        const qs = new URLSearchParams();
+        const pfx = brPrefixFilter();
+        const ps = Number($("#brPageSize")?.value || 100);
+        const win = brEffectiveWindow();
+        if (win) qs.set("route_window", win);
+        if (pfx) qs.set("prefix", pfx);
+        if (!pfx) {
+          qs.set("page", String(brCurrentPage));
+          qs.set("page_size", String(ps));
+        }
+        const s = qs.toString();
+        return s ? `/api/bgp/fib-routes?${s}` : "/api/bgp/fib-routes";
+      }
+
       function learnedRoutesQueryPath() {
         const qs = new URLSearchParams();
         const vf = ($("#brFilterVrf")?.value || "").trim();
@@ -1749,10 +1853,80 @@
           if ([...vs.options].some((op) => op.value === vPrev)) vs.value = vPrev;
           renderBrNeighborOptions();
           if ([...ns.options].some((op) => op.value === nPrev)) ns.value = nPrev;
+          if (j.fib_summary && typeof j.fib_summary === "object") {
+            brFibSummary = j.fib_summary;
+          }
           renderBrSummary(j.summary);
-          renderBrPeerSnapshots(j.peer_snapshots);
         } catch {
           /* 保留「全部」 */
+        }
+      }
+
+      async function loadBrRoutes() {
+        if (brActiveDataSource === "fib") return loadFibRoutes();
+        return loadLearnedRoutes();
+      }
+
+      async function loadFibRoutes() {
+        const meta = $("#brSyncMeta");
+        const tbody = $("#brRoutesBody");
+        if (!tbody) return;
+        const attrEsc = (s) =>
+          String(s || "")
+            .replace(/&/g, "&amp;")
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;");
+        const pfx = brPrefixFilter();
+        const win = brEffectiveWindow();
+        const winLabel = win === "downstream" ? "下游窗" : "上游窗";
+        try {
+          const j = await apiFetch(fibRoutesQueryPath());
+          if (j.summary && typeof j.summary === "object") brFibSummary = j.summary;
+          renderBrSummary(null);
+          const routes = Array.isArray(j.routes) ? j.routes : [];
+          const total = Number(j.total || 0);
+          const page = Number(j.page || 1);
+          const pageSize = Number(j.page_size || 100);
+          if (meta) {
+            const parts = ["数据源: FIB 合并结果", winLabel];
+            if (pfx) parts.push(`前缀=${pfx}（精确）`);
+            parts.push(`共 ${total} 条`);
+            if (!pfx) parts.push(`第 ${page} 页`);
+            meta.textContent = parts.join(" · ");
+          }
+          brCurrentPage = page;
+          brTotalPages = Math.ceil(total / pageSize) || 1;
+          tbody.innerHTML = "";
+          if (!routes.length) {
+            const emptyMsg = pfx
+              ? `未找到 FIB 前缀 <span class="mono">${pfx.replace(/</g, "&lt;")}</span>（${winLabel}，精确匹配）`
+              : `暂无 ${winLabel} FIB 数据：请等待 FIB 重算完成后再查询。`;
+            tbody.innerHTML = `<tr><td colspan="${brColSpan()}" class="small">${emptyMsg}</td></tr>`;
+            updatePaginationUI(total);
+            return;
+          }
+          routes.forEach((r) => {
+            const tr = document.createElement("tr");
+            const rawPath = String(r.as_path || "");
+            const ap = rawPath.length > 64 ? rawPath.slice(0, 64) + "…" : rawPath;
+            const esc = rawPath.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+            tr.innerHTML = `
+            <td>${brRouteWindowTag(r.route_window)}</td>
+            <td class="mono">${r.prefix}</td>
+            <td class="mono">${r.nexthop || "—"}</td>
+            <td class="mono">${r.neighbor_ip || "—"}</td>
+            <td class="mono">${r.source_ip || "—"}</td>
+            <td class="mono">${r.vrf || "—"}</td>
+            <td class="mono small" title="${esc}">${ap.replace(/</g, "&lt;")}</td>
+            <td class="small">${r.updated_at || "—"}</td>
+            <td class="small"><span class="tag good" title="${attrEsc("Agent FIB 合并结果")}">Agent FIB</span></td>
+            `;
+            tbody.appendChild(tr);
+          });
+          updatePaginationUI(total);
+        } catch (e) {
+          tbody.innerHTML = `<tr><td colspan="${brColSpan()}" class="small">加载失败：${String(e.message || e).slice(0, 220)}</td></tr>`;
+          updatePaginationUI(0);
         }
       }
 
@@ -1787,14 +1961,13 @@
           const page = Number(j.page || 1);
           const pageSize = Number(j.page_size || 100);
           if (meta) {
-            const parts = ["数据源: Agent Redis/RocksDB", vfLabel, nipLabel];
+            const parts = ["数据源: RIB 按邻居", vfLabel, nipLabel];
             if (pfxLabel) parts.push(pfxLabel);
             parts.push(`共 ${total} 条`);
             if (!pfx) parts.push(`第 ${page} 页`);
             meta.textContent = parts.join(" · ");
           }
           renderBrSummary(j.summary);
-          renderBrPeerSnapshots(j.peer_snapshots);
           brCurrentPage = page;
           brTotalPages = Math.ceil(total / pageSize);
           routes.sort((a, b) => {
@@ -1808,8 +1981,8 @@
             const winHint = brActiveWindow === "upstream" ? "上游窗" : brActiveWindow === "downstream" ? "下游窗" : "";
             const emptyMsg = pfx
               ? `未找到前缀 <span class="mono">${pfx.replace(/</g, "&lt;")}</span>（精确匹配，请核对掩码或缩小 VRF/邻居范围）`
-              : `暂无${winHint ? winHint + " " : ""}数据：请在 BGP 管理页开启「路由入库」，等待写入持久库后再查询。`;
-            tbody.innerHTML = `<tr><td colspan="11" class="small">${emptyMsg}</td></tr>`;
+              : `暂无${winHint ? winHint + " " : ""}数据：请等待 enabled 邻居会话灌库并写入 FIB 后再查询。`;
+            tbody.innerHTML = `<tr><td colspan="${brColSpan()}" class="small">${emptyMsg}</td></tr>`;
             updatePaginationUI();
             return;
           }
@@ -1839,7 +2012,7 @@
           });
           updatePaginationUI(total);
         } catch (e) {
-          tbody.innerHTML = `<tr><td colspan="11" class="small">加载失败：${String(e.message || e).slice(0, 220)}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="${brColSpan()}" class="small">加载失败：${String(e.message || e).slice(0, 220)}</td></tr>`;
           updatePaginationUI(0);
         }
       }
@@ -1867,7 +2040,7 @@
       function brGoToPage(page) {
         if (page < 1 || page > brTotalPages || page === brCurrentPage) return;
         brCurrentPage = page;
-        loadLearnedRoutes();
+        loadBrRoutes();
       }
 
       function brGoFirst() { brGoToPage(1); }
@@ -1960,12 +2133,16 @@
       }
 
       async function deleteBgpNeighbor(r) {
-        if (!confirm(`确定删除邻居 ${r.neighbor_ip} ？`)) return;
+        if (!confirm(`确定删除邻居 ${r.neighbor_ip} ？\n（百万级路由时 RIB 在后台清理，列表会立即消失）`)) return;
         try {
-          await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}`, {
+          const j = await apiFetch(`/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}`, {
             method: "DELETE",
           });
-          toast("已删除邻居");
+          if (j && j.agent_error) {
+            toast(`邻居已从列表移除，但 Agent 报错：${String(j.agent_error).slice(0, 80)}`);
+          } else {
+            toast(j?.rib_cleanup === "background" ? "已删除邻居（路由数据后台清理中）" : "已删除邻居");
+          }
           await refreshBGP();
         } catch (e) {
           toast(`删除失败：${String(e).slice(0, 120)}`);
@@ -2065,13 +2242,11 @@
           tbody.innerHTML = "";
           if (!Array.isArray(rows) || rows.length === 0) {
             tbody.innerHTML =
-              '<tr><td colspan="12" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
+              '<tr><td colspan="10" class="small">暂无邻居：请检查 bgp-agent.service；RR 选角色 RR + gobgp-rr，下游选 vbgp*。</td></tr>';
             return;
           }
           rows.forEach((r) => {
             const tr = document.createElement("tr");
-            const advEnabled = Number(r.advertise_routes ?? 0) === 1;
-            const storeOn = Number(r.store_received_routes ?? 0) === 1;
             const routesRx = Number(r.routes_received ?? r.pfx_rcd ?? 0);
             tr.innerHTML = `
             <td class="mono">${r.vrf}</td>
@@ -2087,20 +2262,6 @@
                 <input type="checkbox" class="bgp-neighbor-en-sw" ${r.enabled ? "checked" : ""} />
                 <span class="track"><span class="knob"></span></span>
                 <span class="cap neighbor-en-cap">${r.enabled ? "开" : "关"}</span>
-              </label>
-            </td>
-            <td class="bgp-store-cell">
-              <label class="bgp-sw" title="路由入库：把对端 IP 通告给本机的路由写入 Redis/RocksDB；开启时从 ADJ-IN 全量灌库">
-                <input type="checkbox" class="store-sw" ${storeOn ? "checked" : ""} />
-                <span class="track"><span class="knob"></span></span>
-                <span class="cap store-cap">${storeOn ? "开" : "关"}</span>
-              </label>
-            </td>
-            <td class="bgp-adv-cell">
-              <label class="bgp-sw" title="路由通告：从上游入库来源（本行 TCP 源 IP 对应 RR 持久库）读出，通告给本行对端 IP">
-                <input type="checkbox" class="adv-sw" ${advEnabled ? "checked" : ""} />
-                <span class="track"><span class="knob"></span></span>
-                <span class="cap adv-cap">${advEnabled ? "开" : "关"}</span>
               </label>
             </td>
             <td class="bgp-col-sticky">
@@ -2133,81 +2294,12 @@
               }
             });
 
-            const storeSw = tr.querySelector(".store-sw");
-            const storeCap = tr.querySelector(".store-cap");
-            storeSw.addEventListener("change", async () => {
-              const wantStore = !!storeSw.checked;
-              storeSw.disabled = true;
-              try {
-                await apiFetch(
-                  `/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/store-routes`,
-                  { method: "POST", body: JSON.stringify({ store_received_routes: wantStore ? 1 : 0 }) }
-                );
-                if (storeCap) storeCap.textContent = wantStore ? "开" : "关";
-                toast(
-                  wantStore
-                    ? "已开启路由入库，正在将对端收到的路由写入持久库…"
-                    : "已关闭路由入库"
-                );
-                await refreshBGP();
-              } catch (e) {
-                storeSw.checked = !wantStore;
-                if (storeCap) storeCap.textContent = storeSw.checked ? "开" : "关";
-                toast(`入库开关失败：${String(e).slice(0, 120)}`);
-              } finally {
-                storeSw.disabled = false;
-              }
-            });
-
-            const advSw = tr.querySelector(".adv-sw");
-            const advCap = tr.querySelector(".adv-cap");
-            advSw.addEventListener("change", async () => {
-              const wantAdv = !!advSw.checked;
-              advSw.disabled = true;
-              try {
-                await apiFetch(
-                  `/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/advertise`,
-                  { method: "POST", body: JSON.stringify({ advertise_routes: wantAdv ? 1 : 0 }) }
-                );
-                if (advCap) advCap.textContent = wantAdv ? "开" : "关";
-                toast(wantAdv ? "正在从持久库向对端通告路由…" : "正在撤销对端路由通告…");
-                for (let i = 0; i < 60; i++) {
-                  await new Promise((resolve) => setTimeout(resolve, 2000));
-                  try {
-                    const st = await apiFetch(
-                      `/api/bgp/neighbors/${encodeURIComponent(r.vrf)}/${encodeURIComponent(r.neighbor_ip)}/advertise/status`
-                    );
-                    if (st.status === "completed") {
-                      toast(st.message || (wantAdv ? "通告完成" : "已撤销"));
-                      break;
-                    }
-                    if (st.status === "error") {
-                      toast(`通告失败：${st.message || ""}`);
-                      advSw.checked = !wantAdv;
-                      if (advCap) advCap.textContent = advSw.checked ? "开" : "关";
-                      break;
-                    }
-                    if (st.status === "idle") break;
-                  } catch (_) {
-                    break;
-                  }
-                }
-                await refreshBGP();
-              } catch (e) {
-                advSw.checked = !wantAdv;
-                if (advCap) advCap.textContent = advSw.checked ? "开" : "关";
-                toast(`通告开关失败：${String(e).slice(0, 120)}`);
-              } finally {
-                advSw.disabled = false;
-              }
-            });
-
             tbody.appendChild(tr);
           });
         } catch (e) {
           const tbody = $("#bgpBody");
           if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="12" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="10" class="small">加载失败：${String(e.message || e).slice(0, 200)}（请确认通过 http 访问 OP 且后端已启动）</td></tr>`;
           }
           toast(`BGP 列表加载失败：${String(e.message || e).slice(0, 80)}`);
         }
@@ -2613,9 +2705,10 @@
         return m[st] || `<span class="tag">${st || "—"}</span>`;
       }
 
-      async function loadSrScopes() {
+      async function loadSrScopes(dbOnly = true) {
         try {
-          srScopesCache = await apiFetch("/api/static-routes/scopes");
+          const q = dbOnly ? "?db_only=1" : "";
+          srScopesCache = await apiFetch(`/api/static-routes/scopes${q}`);
         } catch {
           srScopesCache = { vrfs: [], tables: [], ifaces: [] };
         }
@@ -2710,7 +2803,7 @@
       }
 
       async function openStaticRouteEdit(row) {
-        await loadSrScopes();
+        await loadSrScopes(false);
         srFillMarkSelect(row ? srScopeLabel(row) : "main");
         srFillDevSelect();
         $("#srDlgId").value = row ? String(row.id) : "";
@@ -2786,12 +2879,15 @@
         });
       }
 
-      async function loadStaticRoutesTable() {
+      async function loadStaticRoutesTable(opts = {}) {
+        const reconcile = !!opts.reconcile;
         const tbody = $("#srRoutesBody");
         if (!tbody) return;
         tbody.innerHTML = '<tr><td colspan="10" class="small">加载中…</td></tr>';
         try {
-          const rows = await apiFetch("/api/static-routes?reconcile=true");
+          const rows = await apiFetch(
+            reconcile ? "/api/static-routes?reconcile=true" : "/api/static-routes"
+          );
           srRowsCache = Array.isArray(rows) ? rows : [];
           const items = srFilterRows(srRowsCache);
           let nApp = 0,
@@ -2880,14 +2976,14 @@
             tbody.innerHTML =
               '<tr><td colspan="10" class="small">无匹配条目，点击「新增路由」</td></tr>';
           }
-        } catch {
-          tbody.innerHTML = '<tr><td colspan="11">加载失败（需 OP API）</td></tr>';
+        } catch (e) {
+          const msg = String(e?.message || e || "未知错误").slice(0, 120);
+          tbody.innerHTML = `<tr><td colspan="10" class="small">加载失败：${msg}</td></tr>`;
         }
       }
 
-      async function loadStaticRoutesPage() {
-        await loadSrScopes();
-        await loadStaticRoutesTable();
+      async function loadStaticRoutesPage(opts = {}) {
+        await Promise.all([loadSrScopes(true), loadStaticRoutesTable(opts)]);
       }
 
       async function loadVpnSummary() {
@@ -3187,6 +3283,11 @@
 
       $("#btnSrAdd")?.addEventListener("click", () => openStaticRouteEdit(null));
       $("#btnSrRefresh")?.addEventListener("click", () => loadStaticRoutesPage().then(() => toast("已刷新")));
+      $("#btnSrReconcile")?.addEventListener("click", async () => {
+        toast("正在对照内核 FIB…");
+        await loadStaticRoutesPage({ reconcile: true });
+        toast("内核对账完成");
+      });
       $("#btnSrProbe")?.addEventListener("click", async () => {
         try {
           const j = await apiFetch("/api/static-routes/probe", { method: "POST", body: "{}" });

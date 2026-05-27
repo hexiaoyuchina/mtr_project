@@ -234,3 +234,42 @@ func (s *Storage) GetStats(ctx context.Context) (map[string]interface{}, error) 
 	
 	return stats, nil
 }
+
+// Redis 返回底层 Redis 客户端（FIB/export 等子系统使用）。
+func (s *Storage) Redis() *redis.Client {
+	return s.redis
+}
+
+// RocksDB 返回底层 RocksDB（FIB/export 等子系统使用）。
+func (s *Storage) RocksDB() *gorocksdb.DB {
+	return s.rocksdb
+}
+
+// ListPeerPolicies 列举所有 peer 策略（FIB 选路用）。
+func (s *Storage) ListPeerPolicies(ctx context.Context) ([]PeerPolicy, error) {
+	var out []PeerPolicy
+	var cursor uint64
+	for {
+		keys, next, err := s.redis.Scan(ctx, cursor, "peer:policy:*", 200).Result()
+		if err != nil {
+			return out, err
+		}
+		for _, k := range keys {
+			data, err := s.redis.Get(ctx, k).Bytes()
+			if err != nil {
+				continue
+			}
+			var p PeerPolicy
+			if err := json.Unmarshal(data, &p); err != nil {
+				continue
+			}
+			NormalizePeerPolicy(&p, p.VRF, p.NeighborIP)
+			out = append(out, p)
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return out, nil
+}

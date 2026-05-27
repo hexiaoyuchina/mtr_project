@@ -34,6 +34,7 @@ type TxAgent struct {
 	config        *Config
 	vrf           string
 	listenPort    uint16
+	grpcAddr      string
 	server        *server.BgpServer
 	storage       Storage
 	handler       PeerRouteHandler
@@ -68,8 +69,9 @@ func NewTxAgent(config *Config, storage Storage, listenPort uint16, vrf string, 
 
 // Start 启动TX Agent
 func (a *TxAgent) Start(ctx context.Context) error {
-	// 创建GoBGP Server（只通告路由）
-	s := server.NewBgpServer()
+	grpcPort := 50000 + int(a.listenPort)
+	a.grpcAddr = fmt.Sprintf("127.0.0.1:%d", grpcPort)
+	s := server.NewBgpServer(server.GrpcListenAddress(a.grpcAddr))
 	go s.Serve()
 
 	a.server = s
@@ -200,6 +202,14 @@ func (a *TxAgent) ListPeers(ctx context.Context) ([]PeerStatus, error) {
 		out = append(out, st)
 	})
 	return out, err
+}
+
+// ConfigRouterID 返回配置的 Router ID（通告缺省下一跳）。
+func (a *TxAgent) ConfigRouterID() string {
+	if a.config != nil && a.config.RouterID != "" {
+		return a.config.RouterID
+	}
+	return ""
 }
 
 // RemoveNeighbor 删除下游邻居

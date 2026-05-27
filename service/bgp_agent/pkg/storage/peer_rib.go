@@ -17,6 +17,7 @@ type PeerRoute struct {
 	Window     string    `json:"window"`
 	VRF        string    `json:"vrf"`
 	NeighborIP string    `json:"neighbor_ip"`
+	SourceIP   string    `json:"source_ip,omitempty"`
 	Prefix     string    `json:"prefix"`
 	Nexthop    string    `json:"nexthop"`
 	ASPath     string    `json:"as_path"`
@@ -24,37 +25,28 @@ type PeerRoute struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// PeerPolicy 是否把从对端收到的路由写入 Redis/RocksDB。
+// PeerPolicy peer 入库/通告策略（enabled 邻居默认入库）。
 type PeerPolicy struct {
-	Window       string `json:"window"`
-	VRF          string `json:"vrf"`
-	NeighborIP   string `json:"neighbor_ip"`
-	StoreRoutes  bool   `json:"store_routes"`
-	AdvertiseOut bool   `json:"advertise_out"`
+	Window         string `json:"window"`
+	VRF            string `json:"vrf"`
+	NeighborIP     string `json:"neighbor_ip"`
+	SourceIP       string `json:"source_ip,omitempty"`
+	StoreRoutes    bool   `json:"store_routes"`
+	AdvertiseOut     bool   `json:"advertise_out"`
+	Enabled        bool   `json:"enabled"`
+	ParticipateFib *bool  `json:"participate_fib,omitempty"`
 }
 
-func peerRouteRedisKey(window, vrf, neighbor, prefix string) string {
-	return fmt.Sprintf("rib:%s:%s:%s:%s", window, vrf, neighbor, prefix)
-}
-
-func peerRouteRocksKey(window, vrf, neighbor, prefix string) []byte {
-	return []byte(fmt.Sprintf("r:%s:%s:%s:%s", window, vrf, neighbor, prefix))
-}
-
-func peerCountRedisKey(window, vrf, neighbor string) string {
-	return fmt.Sprintf("rib:cnt:%s:%s:%s", window, vrf, neighbor)
+// ParticipatesInFib 是否参与 FIB 选路候选（与 store_routes / enabled 解耦）。
+func ParticipatesInFib(p PeerPolicy) bool {
+	if p.ParticipateFib != nil {
+		return *p.ParticipateFib
+	}
+	return true
 }
 
 func peerPolicyRedisKey(vrf, neighbor string) string {
 	return fmt.Sprintf("peer:policy:%s:%s", vrf, neighbor)
-}
-
-func peerScanPrefix(window, vrf, neighbor string) string {
-	return fmt.Sprintf("rib:%s:%s:%s:", window, vrf, neighbor)
-}
-
-func rocksScanPrefix(window, vrf, neighbor string) []byte {
-	return []byte(fmt.Sprintf("r:%s:%s:%s:", window, vrf, neighbor))
 }
 
 // SetPeerPolicy 保存 peer 入库/通告策略（OP 同步）。
@@ -66,12 +58,12 @@ func (s *Storage) SetPeerPolicy(ctx context.Context, p PeerPolicy) error {
 	return s.redis.Set(ctx, peerPolicyRedisKey(p.VRF, p.NeighborIP), data, 0).Err()
 }
 
-// GetPeerPolicy 读取策略；不存在时 store_routes 默认 false。
+// GetPeerPolicy 读取策略；不存在时 enabled 且 store_routes 默认 true。
 func (s *Storage) GetPeerPolicy(ctx context.Context, vrf, neighbor string) (PeerPolicy, error) {
 	key := peerPolicyRedisKey(vrf, neighbor)
 	data, err := s.redis.Get(ctx, key).Bytes()
 	if err == redis.Nil {
-		return PeerPolicy{VRF: vrf, NeighborIP: neighbor}, nil
+		return PeerPolicy{VRF: vrf, NeighborIP: neighbor, StoreRoutes: true, Enabled: true}, nil
 	}
 	if err != nil {
 		return PeerPolicy{}, err
@@ -80,13 +72,41 @@ func (s *Storage) GetPeerPolicy(ctx context.Context, vrf, neighbor string) (Peer
 	if err := json.Unmarshal(data, &p); err != nil {
 		return PeerPolicy{}, err
 	}
+	NormalizePeerPolicy(&p, vrf, neighbor)
 	return p, nil
 }
 
-// ShouldStoreRoutes 是否对该 peer 持久化收到的路由。
+// NormalizePeerPolicy 旧策略 JSON 缺 enabled 时与 store_routes 对齐；补全 window。
+func NormalizePeerPolicy(p *PeerPolicy, vrf, neighbor string) {
+	if p.VRF == "" {
+		p.VRF = vrf
+	}
+	if p.NeighborIP == "" {
+		p.NeighborIP = neighbor
+	}
+	if strings.TrimSpace(p.Window) == "" {
+		if p.VRF == "gobgp-rr" || strings.EqualFold(p.VRF, "rr") {
+			p.Window = WindowUpstream
+		} else {
+			p.Window = WindowDownstream
+		}
+	}
+	// 旧版仅存 store_routes:true 时 Go 缺省 enabled=false，应视为 enabled
+	if p.StoreRoutes && !p.Enabled {
+		p.Enabled = true
+	}
+	if p.Enabled && !p.StoreRoutes {
+		p.StoreRoutes = true
+	}
+}
+
+// ShouldStoreRoutes 是否对该 peer 持久化收到的路由（enabled 默认 true）。
 func (s *Storage) ShouldStoreRoutes(ctx context.Context, vrf, neighbor string) bool {
 	p, err := s.GetPeerPolicy(ctx, vrf, neighbor)
 	if err != nil {
+		return true
+	}
+	if !p.Enabled {
 		return false
 	}
 	return p.StoreRoutes
@@ -100,7 +120,7 @@ func (s *Storage) UpsertPeerRoute(ctx context.Context, rt PeerRoute) (bool, erro
 	if rt.UpdatedAt.IsZero() {
 		rt.UpdatedAt = time.Now()
 	}
-	rkey := peerRouteRedisKey(rt.Window, rt.VRF, rt.NeighborIP, rt.Prefix)
+	rkey := peerRouteRedisKey(rt.Window, rt.VRF, rt.NeighborIP, rt.SourceIP, rt.Prefix)
 	exists, err := s.redis.Exists(ctx, rkey).Result()
 	if err != nil {
 		return false, err
@@ -114,7 +134,7 @@ func (s *Storage) UpsertPeerRoute(ctx context.Context, rt PeerRoute) (bool, erro
 		return false, err
 	}
 	if isNew {
-		_ = s.redis.Incr(ctx, peerCountRedisKey(rt.Window, rt.VRF, rt.NeighborIP)).Err()
+		_ = s.redis.Incr(ctx, peerCountRedisKey(rt.Window, rt.VRF, rt.NeighborIP, rt.SourceIP)).Err()
 	}
 	if err := s.persistPeerRouteOne(rt); err != nil {
 		return isNew, err
@@ -129,7 +149,7 @@ func (s *Storage) persistPeerRouteOne(rt PeerRoute) error {
 	}
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
-	return s.rocksdb.Put(wo, peerRouteRocksKey(rt.Window, rt.VRF, rt.NeighborIP, rt.Prefix), data)
+	return s.rocksdb.Put(wo, peerRouteRocksKey(rt.Window, rt.VRF, rt.NeighborIP, rt.SourceIP, rt.Prefix), data)
 }
 
 // PersistPeerRouteBatch RocksDB 批量写入。
@@ -146,20 +166,20 @@ func (s *Storage) PersistPeerRouteBatch(routes []PeerRoute) error {
 		if err != nil {
 			continue
 		}
-		batch.Put(peerRouteRocksKey(rt.Window, rt.VRF, rt.NeighborIP, rt.Prefix), data)
+		batch.Put(peerRouteRocksKey(rt.Window, rt.VRF, rt.NeighborIP, rt.SourceIP, rt.Prefix), data)
 	}
 	return s.rocksdb.Write(wo, batch)
 }
 
 // DeletePeerRoute 删除单条。
-func (s *Storage) DeletePeerRoute(ctx context.Context, window, vrf, neighbor, prefix string) error {
-	rkey := peerRouteRedisKey(window, vrf, neighbor, prefix)
+func (s *Storage) DeletePeerRoute(ctx context.Context, window, vrf, neighbor, sourceIP, prefix string) error {
+	rkey := peerRouteRedisKey(window, vrf, neighbor, sourceIP, prefix)
 	n, err := s.redis.Del(ctx, rkey).Result()
 	if err != nil {
 		return err
 	}
 	if n > 0 {
-		cntKey := peerCountRedisKey(window, vrf, neighbor)
+		cntKey := peerCountRedisKey(window, vrf, neighbor, sourceIP)
 		v, _ := s.redis.Get(ctx, cntKey).Int64()
 		if v > 0 {
 			_ = s.redis.Decr(ctx, cntKey).Err()
@@ -167,16 +187,16 @@ func (s *Storage) DeletePeerRoute(ctx context.Context, window, vrf, neighbor, pr
 	}
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
-	return s.rocksdb.Delete(wo, peerRouteRocksKey(window, vrf, neighbor, prefix))
+	return s.rocksdb.Delete(wo, peerRouteRocksKey(window, vrf, neighbor, sourceIP, prefix))
 }
 
 // GetPeerRoute 按前缀精确查询（Redis 主记录；O(1)）。
-func (s *Storage) GetPeerRoute(ctx context.Context, window, vrf, neighbor, prefix string) (*PeerRoute, error) {
+func (s *Storage) GetPeerRoute(ctx context.Context, window, vrf, neighbor, sourceIP, prefix string) (*PeerRoute, error) {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return nil, nil
 	}
-	rkey := peerRouteRedisKey(window, vrf, neighbor, prefix)
+	rkey := peerRouteRedisKey(window, vrf, neighbor, sourceIP, prefix)
 	data, err := s.redis.Get(ctx, rkey).Bytes()
 	if err == redis.Nil {
 		return nil, nil
@@ -192,8 +212,8 @@ func (s *Storage) GetPeerRoute(ctx context.Context, window, vrf, neighbor, prefi
 }
 
 // CountPeerRoutes 该 peer 在 Redis 计数器中的条数（O(1)）。
-func (s *Storage) CountPeerRoutes(ctx context.Context, window, vrf, neighbor string) (int64, error) {
-	v, err := s.redis.Get(ctx, peerCountRedisKey(window, vrf, neighbor)).Int64()
+func (s *Storage) CountPeerRoutes(ctx context.Context, window, vrf, neighbor, sourceIP string) (int64, error) {
+	v, err := s.redis.Get(ctx, peerCountRedisKey(window, vrf, neighbor, sourceIP)).Int64()
 	if err == redis.Nil {
 		return 0, nil
 	}
@@ -201,7 +221,7 @@ func (s *Storage) CountPeerRoutes(ctx context.Context, window, vrf, neighbor str
 }
 
 // ListPeerRoutesPage 分页列举（RocksDB 迭代 skip/limit，不一次性加载全表）。
-func (s *Storage) ListPeerRoutesPage(window, vrf, neighbor string, offset, limit int) ([]PeerRoute, int, error) {
+func (s *Storage) ListPeerRoutesPage(window, vrf, neighbor, sourceIP string, offset, limit int) ([]PeerRoute, int, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -209,10 +229,10 @@ func (s *Storage) ListPeerRoutesPage(window, vrf, neighbor string, offset, limit
 		limit = 5000
 	}
 	ctx := context.Background()
-	total64, _ := s.CountPeerRoutes(ctx, window, vrf, neighbor)
+	total64, _ := s.CountPeerRoutes(ctx, window, vrf, neighbor, sourceIP)
 	total := int(total64)
 
-	prefix := rocksScanPrefix(window, vrf, neighbor)
+	prefix := rocksScanPrefix(window, vrf, neighbor, sourceIP)
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	it := s.rocksdb.NewIterator(ro)
@@ -243,11 +263,11 @@ func (s *Storage) ListPeerRoutesPage(window, vrf, neighbor string, offset, limit
 }
 
 // IteratePeerRoutes 按批回调（通告百万级用）；从 RocksDB 流式扫描，避免一次加载。
-func (s *Storage) IteratePeerRoutes(window, vrf, neighbor string, batchSize int, fn func([]PeerRoute) error) error {
+func (s *Storage) IteratePeerRoutes(window, vrf, neighbor, sourceIP string, batchSize int, fn func([]PeerRoute) error) error {
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
-	prefix := rocksScanPrefix(window, vrf, neighbor)
+	prefix := rocksScanPrefix(window, vrf, neighbor, sourceIP)
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	it := s.rocksdb.NewIterator(ro)
@@ -278,8 +298,8 @@ func (s *Storage) IteratePeerRoutes(window, vrf, neighbor string, batchSize int,
 	return it.Err()
 }
 
-func peerRoutePrefixFromRedisKey(key, window, vrf, neighbor string) (string, bool) {
-	base := peerScanPrefix(window, vrf, neighbor)
+func peerRoutePrefixFromRedisKey(key, window, vrf, neighbor, sourceIP string) (string, bool) {
+	base := peerScanPrefix(window, vrf, neighbor, sourceIP)
 	if !strings.HasPrefix(key, base) {
 		return "", false
 	}
@@ -290,13 +310,23 @@ func peerRoutePrefixFromRedisKey(key, window, vrf, neighbor string) (string, boo
 	return pfx, true
 }
 
+// PurgePeerRoutes 删除该 peer 会话的全部 RIB（管理删除邻居时调用）。
+func (s *Storage) PurgePeerRoutes(ctx context.Context, window, vrf, neighbor, sourceIP string) (int, error) {
+	removed, err := s.PurgePeerRoutesNotIn(ctx, window, vrf, neighbor, sourceIP, map[string]struct{}{})
+	if err != nil {
+		return removed, err
+	}
+	_ = s.redis.Del(ctx, peerPolicyRedisKey(vrf, neighbor)).Err()
+	return removed, nil
+}
+
 // PurgePeerRoutesNotIn 删除该 peer 在 Redis/RocksDB 中不在 keep 集合里的前缀。
-func (s *Storage) PurgePeerRoutesNotIn(ctx context.Context, window, vrf, neighbor string, keep map[string]struct{}) (int, error) {
+func (s *Storage) PurgePeerRoutesNotIn(ctx context.Context, window, vrf, neighbor, sourceIP string, keep map[string]struct{}) (int, error) {
 	if keep == nil {
 		keep = map[string]struct{}{}
 	}
 	removed := 0
-	pat := peerScanPrefix(window, vrf, neighbor) + "*"
+	pat := peerScanPrefix(window, vrf, neighbor, sourceIP) + "*"
 	var cursor uint64
 	for {
 		keys, next, err := s.redis.Scan(ctx, cursor, pat, 500).Result()
@@ -304,14 +334,14 @@ func (s *Storage) PurgePeerRoutesNotIn(ctx context.Context, window, vrf, neighbo
 			return removed, err
 		}
 		for _, k := range keys {
-			pfx, ok := peerRoutePrefixFromRedisKey(k, window, vrf, neighbor)
+			pfx, ok := peerRoutePrefixFromRedisKey(k, window, vrf, neighbor, sourceIP)
 			if !ok {
 				continue
 			}
 			if _, exists := keep[pfx]; exists {
 				continue
 			}
-			if err := s.DeletePeerRoute(ctx, window, vrf, neighbor, pfx); err != nil {
+			if err := s.DeletePeerRoute(ctx, window, vrf, neighbor, sourceIP, pfx); err != nil {
 				continue
 			}
 			removed++
@@ -321,7 +351,7 @@ func (s *Storage) PurgePeerRoutesNotIn(ctx context.Context, window, vrf, neighbo
 			break
 		}
 	}
-	rocksPrefix := rocksScanPrefix(window, vrf, neighbor)
+	rocksPrefix := rocksScanPrefix(window, vrf, neighbor, sourceIP)
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	it := s.rocksdb.NewIterator(ro)
@@ -347,7 +377,7 @@ func (s *Storage) PurgePeerRoutesNotIn(ctx context.Context, window, vrf, neighbo
 	if err := it.Err(); err != nil {
 		return removed, err
 	}
-	_, _ = s.RebuildPeerCount(ctx, window, vrf, neighbor)
+	_, _ = s.RebuildPeerCount(ctx, window, vrf, neighbor, sourceIP)
 	return removed, nil
 }
 
@@ -357,6 +387,7 @@ type PeerIngestBuilder struct {
 	window   string
 	vrf      string
 	neighbor string
+	sourceIP string
 	keep     map[string]struct{}
 	rocks    []PeerRoute
 	ingested int
@@ -364,12 +395,13 @@ type PeerIngestBuilder struct {
 }
 
 // NewPeerIngestBuilder 开始一次 ingest 会话。
-func (s *Storage) NewPeerIngestBuilder(window, vrf, neighbor string) *PeerIngestBuilder {
+func (s *Storage) NewPeerIngestBuilder(window, vrf, neighbor, sourceIP string) *PeerIngestBuilder {
 	return &PeerIngestBuilder{
 		s:        s,
 		window:   window,
 		vrf:      vrf,
 		neighbor: neighbor,
+		sourceIP: sourceIP,
 		keep:     make(map[string]struct{}),
 		rocks:    make([]PeerRoute, 0, 1000),
 	}
@@ -387,6 +419,7 @@ func (b *PeerIngestBuilder) Add(ctx context.Context, prefix, nexthop, aspath str
 		Window:     b.window,
 		VRF:        b.vrf,
 		NeighborIP: b.neighbor,
+		SourceIP:   b.sourceIP,
 		Prefix:     prefix,
 		Nexthop:    nexthop,
 		ASPath:     aspath,
@@ -414,13 +447,13 @@ func (b *PeerIngestBuilder) Finish(ctx context.Context) (ingested int, removed i
 		_ = b.s.PersistPeerRouteBatch(b.rocks)
 		b.rocks = b.rocks[:0]
 	}
-	removed, err = b.s.PurgePeerRoutesNotIn(ctx, b.window, b.vrf, b.neighbor, b.keep)
+	removed, err = b.s.PurgePeerRoutesNotIn(ctx, b.window, b.vrf, b.neighbor, b.sourceIP, b.keep)
 	return b.ingested, removed, err
 }
 
 // IngestPeerRoutes 将对端 ADJ-IN 快照写入 RIB，并删除 Adj-RIB-In 中已不存在的前缀。
-func (s *Storage) IngestPeerRoutes(ctx context.Context, window, vrf, neighbor string, routes []PeerRoute) (ingested int, removed int, err error) {
-	b := s.NewPeerIngestBuilder(window, vrf, neighbor)
+func (s *Storage) IngestPeerRoutes(ctx context.Context, window, vrf, neighbor, sourceIP string, routes []PeerRoute) (ingested int, removed int, err error) {
+	b := s.NewPeerIngestBuilder(window, vrf, neighbor, sourceIP)
 	for _, rt := range routes {
 		if rt.Prefix == "" {
 			continue
@@ -433,8 +466,8 @@ func (s *Storage) IngestPeerRoutes(ctx context.Context, window, vrf, neighbor st
 }
 
 // RebuildPeerCount 从 Redis SCAN 重建计数（维护用）。
-func (s *Storage) RebuildPeerCount(ctx context.Context, window, vrf, neighbor string) (int64, error) {
-	pat := peerScanPrefix(window, vrf, neighbor) + "*"
+func (s *Storage) RebuildPeerCount(ctx context.Context, window, vrf, neighbor, sourceIP string) (int64, error) {
+	pat := peerScanPrefix(window, vrf, neighbor, sourceIP) + "*"
 	var cursor uint64
 	var n int64
 	for {
@@ -448,6 +481,6 @@ func (s *Storage) RebuildPeerCount(ctx context.Context, window, vrf, neighbor st
 			break
 		}
 	}
-	_ = s.redis.Set(ctx, peerCountRedisKey(window, vrf, neighbor), strconv.FormatInt(n, 10), 0).Err()
+	_ = s.redis.Set(ctx, peerCountRedisKey(window, vrf, neighbor, sourceIP), strconv.FormatInt(n, 10), 0).Err()
 	return n, nil
 }
